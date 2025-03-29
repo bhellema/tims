@@ -2,6 +2,9 @@
   "name": "nhl",
   "version": "1.0.0",
   "main": "player_stats_analyzer.js",
+  "bin": {
+    "tims": "./player_stats_analyzer.js"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
