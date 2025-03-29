@@ -1,18 +1,22 @@
+#!/usr/bin/env node
+
 import fetch from 'node-fetch';
 import readline from 'readline';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { format } from 'date-fns';
 
 const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
-const DATA_DIR = './data';
-const PICKS_DIR = './picks';
+const HOME_DIR = path.join(os.homedir(), '.tims');
+const DATA_DIR = path.join(HOME_DIR, 'data');
+const PICKS_BASE_DIR = path.join(HOME_DIR, 'picks');
 
 if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-if (!fs.existsSync(PICKS_DIR)) {
-    fs.mkdirSync(PICKS_DIR, { recursive: true });
+if (!fs.existsSync(PICKS_BASE_DIR)) {
+    fs.mkdirSync(PICKS_BASE_DIR, { recursive: true });
 }
 
 function getTodayFilename() {
@@ -26,11 +30,20 @@ function getLatestDataFile() {
     return path.join(DATA_DIR, files[0]);
 }
 
+function getPicksDirectory() {
+    const todayDir = path.join(PICKS_BASE_DIR, format(new Date(), 'yyyy-MM-dd'));
+    if (!fs.existsSync(todayDir)) {
+        fs.mkdirSync(todayDir, { recursive: true });
+    }
+    return todayDir;
+}
+
 function getNextPicksFilename() {
+    const picksDir = getPicksDirectory();
     let index = 1;
     let filename;
     do {
-        filename = path.join(PICKS_DIR, `picks_${index}.json`);
+        filename = path.join(picksDir, `picks_${index}.json`);
         index++;
     } while (fs.existsSync(filename));
     return filename;
@@ -180,11 +193,6 @@ async function main() {
         console.log(`   Team: ${player.stats.team}`);
         console.log('------------------------');
     });
-
-    if (playerAnalysis.length > 0) {
-        console.log(`\nRecommended player: ${playerAnalysis[0].name}`);
-        console.log('This player has the best combination of goal-scoring ability and defensive play.');
-    }
 }
 
 main();
