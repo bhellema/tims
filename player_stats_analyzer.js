@@ -193,6 +193,11 @@ async function main() {
         console.log(`   Team: ${player.stats.team}`);
         console.log('------------------------');
     });
+
+    if (playerAnalysis.length > 0) {
+        console.log(`\nRecommended player: ${playerAnalysis[0].name}`);
+        console.log('This player has the best combination of goal-scoring ability and defensive play.');
+    }
 }
 
 main();
