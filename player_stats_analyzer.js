@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import fetch from 'node-fetch';
-import readline from 'readline';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { format } from 'date-fns';
+import puppeteer from 'puppeteer';
 
 const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
 const HOME_DIR = path.join(os.homedir(), '.tims');
@@ -99,39 +99,77 @@ async function fetchAllPlayerStats() {
     return allPlayers;
 }
 
-function setupReadline(playerNames) {
-    return readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        completer: (line) => {
-            const hits = playerNames.filter(name => name.toLowerCase().startsWith(line.toLowerCase()));
-            return [hits.length ? hits : playerNames, line];
-        }
+async function scrapeInjuredPlayers() {
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+    );
+
+    await page.goto('https://puckpedia.com/injuries', {
+        waitUntil: 'networkidle2',
+        timeout: 10000
     });
+
+    const injuredPlayers = await page.evaluate(() => {
+        const players = [];
+        const table = document.querySelector('.pp_table');
+        table.querySelectorAll('.pp_link').forEach(element => {
+            // Schuldt, Jimmy
+            let name = element.innerText;
+            const [last, first] = name.split(',');
+            players.push(first.trim() + ' ' + last.trim());
+        });
+        return players;
+    });
+
+    await browser.close();
+    return injuredPlayers;
 }
 
-async function getPlayerNames(playerNamesList) {
-    const rl = setupReadline(playerNamesList);
-    const playerNames = [];
-    
-    const askForPlayer = () => {
-        return new Promise((resolve) => {
-            rl.question('Enter player name (or type "done" when finished): ', (answer) => {
-                resolve(answer.trim());
+async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.goto('https://hockeychallengehelper.com/', {waitUntil: 'networkidle2'});
+
+    const rounds = await page.evaluate(() => {
+        const tables = document.querySelectorAll('.player-table');
+        const picks = [];
+
+        tables.forEach(table => {
+            const players = [];
+            table.querySelectorAll('tr').forEach(row => {
+                const anchor = row.querySelector('a.vertical-middle');
+                if (anchor) {
+                    const name = anchor.innerText.trim();
+                    const url = anchor.href;
+                    const idMatch = url.match(/\/player\/(\d+)$/);
+                    if (idMatch) {
+                        const id = idMatch[1];
+                        players.push({ name, id });
+                    }
+                }
             });
+            picks.push(players);
         });
-    };
 
-    while (true) {
-        const playerName = await askForPlayer();
-        if (playerName.toLowerCase() === 'done') {
-            break;
-        }
-        playerNames.push(playerName);
-    }
+        return picks;
+    });
 
-    rl.close();
-    return playerNames;
+    await browser.close();
+
+    const filteredPlayerData = rounds.map(round => {
+        return round.filter(player => {
+            const pp = allPlayerStats.find((ps) => ps.playerId == player.id);
+            if (injuredPlayers.includes(pp.skaterFullName)) {
+                console.warn(`🚨 ${pp.skaterFullName} is injured!`);
+                return false;
+            } 
+            return true;
+        });
+    });
+
+    return filteredPlayerData;
 }
 
 function calculateScoringProbability(playerStats) {
@@ -149,15 +187,15 @@ function calculateScoringProbability(playerStats) {
     // Convert time on ice to minutes
     const toiInMinutes = playerStats.timeOnIcePerGame / 60;
 
-    let scoreProbability = 
-        (toiInMinutes * weights.toi) +
-        (playerStats.shots * weights.sog) +
-        (playerStats.shootingPct * 100 * weights.shPercent) + // Convert shooting % to whole number
-        (playerStats.ppGoals * weights.ppGoals) +
-        (playerStats.pointsPerGame * weights.pointsPerGame) +
-        (playerStats.plusMinus * weights.plusMinus) +
-        (playerStats.gameWinningGoals * weights.gameWinningGoals) +
-        (playerStats.goals * weights.goals);
+    let scoreProbability =
+      (toiInMinutes * weights.toi) +
+      (playerStats.shots * weights.sog) +
+      (playerStats.shootingPct * 100 * weights.shPercent) + // Convert shooting % to whole number
+      (playerStats.ppGoals * weights.ppGoals) +
+      (playerStats.pointsPerGame * weights.pointsPerGame) +
+      (playerStats.plusMinus * weights.plusMinus) +
+      (playerStats.gameWinningGoals * weights.gameWinningGoals) +
+      (playerStats.goals * weights.goals);
 
     // Normalize to a percentage (0-100 scale)
     return Math.min(Math.max(scoreProbability, 0), 100).toFixed(2);
@@ -182,53 +220,55 @@ function analyzePlayer(playerStats) {
 async function main() {
     console.log('Initializing NHL player stats analyzer...');
     const allPlayerStats = await fetchAllPlayerStats();
-    
+
     if (!allPlayerStats) {
         console.log('Failed to fetch player stats. Exiting...');
         return;
     }
 
-    const allPlayerNames = allPlayerStats.map(player => player.skaterFullName);
-    console.log('\nPlease enter the names of players you want to analyze (autocomplete enabled):');
-    const playerNames = await getPlayerNames(allPlayerNames);
+    const injuredPlayers = await scrapeInjuredPlayers();
+    const pickRounds = await scrapePlayerNames(injuredPlayers, allPlayerStats);
 
-    const picksFilename = getNextPicksFilename();
-    fs.writeFileSync(picksFilename, JSON.stringify(playerNames, null, 2), 'utf8');
-    console.log(`Player picks saved to ${picksFilename}`);
+    const finalChoice = [];
 
-    const playerAnalysis = [];
-    
-    for (const name of playerNames) {
-        const playerStats = allPlayerStats.find(p => 
-            p.skaterFullName.toLowerCase().includes(name.toLowerCase())
-        );
+    pickRounds.forEach((pick, index) => {
+        const playerAnalysis = [];
 
-        if (playerStats) {
-            playerAnalysis.push(analyzePlayer(playerStats));
-        } else {
-            console.log(`Player "${name}" not found in the database.`);
+        pick.forEach(player => {
+            const playerStats = allPlayerStats.find(p =>
+              p.playerId == player.id
+            );
+
+            if (playerStats) {
+                playerAnalysis.push(analyzePlayer(playerStats));
+            } else {
+                console.log(`Player "${name}" not found in the database.`);
+            }
+        });
+
+        playerAnalysis.sort((a, b) => b.score - a.score);
+
+        // console.log('\nPlayer Analysis Results:');
+        // console.log('------------------------');
+        // playerAnalysis.forEach((player, index) => {
+        //     console.log(`${index + 1}. ${player.name}`);
+        //     console.log(`   Score: ${player.score}`);
+        //     console.log(`   Goals: ${player.stats.goals}`);
+        //     console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
+        //     console.log(`   Points: ${player.stats.points}`);
+        //     console.log(`   Games Played: ${player.stats.gamesPlayed}`);
+        //     console.log(`   Team: ${player.stats.team}`);
+        //     console.log('------------------------');
+        // });
+
+        if (playerAnalysis.length > 0) {
+            finalChoice.push(playerAnalysis[0].name);
         }
-    }
-
-    playerAnalysis.sort((a, b) => b.score - a.score);
-
-    console.log('\nPlayer Analysis Results:');
-    console.log('------------------------');
-    playerAnalysis.forEach((player, index) => {
-        console.log(`${index + 1}. ${player.name}`);
-        console.log(`   Score: ${player.score}`);
-        console.log(`   Goals: ${player.stats.goals}`);
-        console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
-        console.log(`   Points: ${player.stats.points}`);
-        console.log(`   Games Played: ${player.stats.gamesPlayed}`);
-        console.log(`   Team: ${player.stats.team}`);
-        console.log('------------------------');
     });
 
-    if (playerAnalysis.length > 0) {
-        console.log(`\nRecommended player: ${playerAnalysis[0].name}`);
-        console.log('This player has the best combination of goal-scoring ability and defensive play.');
-    }
+    finalChoice.forEach((choice) => {
+        console.log(`Recommended player for pick: ${choice}\n`);
+    });
 }
 
 main();
