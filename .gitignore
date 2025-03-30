@@ -2,3 +2,4 @@ node_modules/
 picks/
 data/
 package-lock.json
+.idea

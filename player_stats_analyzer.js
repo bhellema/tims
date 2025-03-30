@@ -242,7 +242,7 @@ async function main() {
             if (playerStats) {
                 playerAnalysis.push(analyzePlayer(playerStats));
             } else {
-                console.log(`Player "${name}" not found in the database.`);
+                console.log(`Player "${playerStats.skaterFullName}" not found in the database.`);
             }
         });
 
@@ -266,8 +266,8 @@ async function main() {
         }
     });
 
-    finalChoice.forEach((choice) => {
-        console.log(`Recommended player for pick: ${choice}\n`);
+    finalChoice.forEach((choice, index) => {
+        console.log(`Round ${index + 1}: ${choice}`);
     });
 }
 
