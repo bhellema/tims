@@ -134,16 +134,47 @@ async function getPlayerNames(playerNamesList) {
     return playerNames;
 }
 
+function calculateScoringProbability(playerStats) {
+    const weights = {
+        toi: 0.15,           // Time on Ice Weight
+        sog: 0.25,           // Shots on Goal Weight
+        shPercent: 0.20,     // Shooting Percentage Weight
+        ppGoals: 0.10,       // Power Play Goals Weight
+        pointsPerGame: 0.10, // Points Per Game Weight
+        plusMinus: 0.05,     // Plus/Minus Weight
+        gameWinningGoals: 0.10, // Game Winning Goals Weight
+        goals: 0.30          // Total Goals Weight (higher impact)
+    };
+
+    // Convert time on ice to minutes
+    const toiInMinutes = playerStats.timeOnIcePerGame / 60;
+
+    let scoreProbability = 
+        (toiInMinutes * weights.toi) +
+        (playerStats.shots * weights.sog) +
+        (playerStats.shootingPct * 100 * weights.shPercent) + // Convert shooting % to whole number
+        (playerStats.ppGoals * weights.ppGoals) +
+        (playerStats.pointsPerGame * weights.pointsPerGame) +
+        (playerStats.plusMinus * weights.plusMinus) +
+        (playerStats.gameWinningGoals * weights.gameWinningGoals) +
+        (playerStats.goals * weights.goals);
+
+    // Normalize to a percentage (0-100 scale)
+    return Math.min(Math.max(scoreProbability, 0), 100).toFixed(2);
+}
+
 function analyzePlayer(playerStats) {
+    const prob = calculateScoringProbability(playerStats);
     return {
         name: playerStats.skaterFullName,
-        score: playerStats.goals,
+        score: prob,
         stats: {
             goals: playerStats.goals,
             plusMinus: playerStats.plusMinus,
             gamesPlayed: playerStats.gamesPlayed,
             points: playerStats.points,
-            team: playerStats.teamAbbrevs
+            team: playerStats.teamAbbrevs,
+            toi: playerStats.timeOnIcePerGame
         }
     };
 }
