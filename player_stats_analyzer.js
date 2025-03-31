@@ -234,19 +234,13 @@ async function main() {
             playerAnalysis.push(analyzePlayer(player));
         });
 
-        playerAnalysis.sort((a, b) => b.score - a.score);
+        playerAnalysis.sort((a, b) => b.prob - a.prob);
 
         // console.log('\nPlayer Analysis Results:');
         // console.log('------------------------');
         console.log(`Round ${roundIndex+1}:`);
         playerAnalysis.forEach((player, index) => {
             console.log(`${index + 1}. ${player.name} - ${player.prob}%`);
-            // console.log(`   Goals: ${player.stats.goals}`);
-            // console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
-            // console.log(`   Points: ${player.stats.points}`);
-            // console.log(`   Games Played: ${player.stats.gamesPlayed}`);
-            // console.log(`   Team: ${player.stats.team}`);
-            // console.log('------------------------');
         });
 
         if (playerAnalysis.length > 0) {
