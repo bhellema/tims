@@ -201,7 +201,7 @@ function analyzePlayer(playerStats) {
     const prob = calculateScoringProbability(playerStats);
     return {
         name: playerStats.skaterFullName,
-        score: prob,
+        prob,
         stats: {
             goals: playerStats.goals,
             plusMinus: playerStats.plusMinus,
@@ -240,14 +240,13 @@ async function main() {
         // console.log('------------------------');
         console.log(`Round ${roundIndex+1}:`);
         playerAnalysis.forEach((player, index) => {
-            console.log(`${index + 1}. ${player.name}`);
-            console.log(`   Score: ${player.score}`);
-            console.log(`   Goals: ${player.stats.goals}`);
-            console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
-            console.log(`   Points: ${player.stats.points}`);
-            console.log(`   Games Played: ${player.stats.gamesPlayed}`);
-            console.log(`   Team: ${player.stats.team}`);
-            console.log('------------------------');
+            console.log(`${index + 1}. ${player.name} - ${player.prob}%`);
+            // console.log(`   Goals: ${player.stats.goals}`);
+            // console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
+            // console.log(`   Points: ${player.stats.points}`);
+            // console.log(`   Games Played: ${player.stats.gamesPlayed}`);
+            // console.log(`   Team: ${player.stats.team}`);
+            // console.log('------------------------');
         });
 
         if (playerAnalysis.length > 0) {
