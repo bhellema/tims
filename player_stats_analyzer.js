@@ -4,7 +4,7 @@ import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { format } from 'date-fns';
+import {format} from 'date-fns';
 import puppeteer from 'puppeteer';
 
 const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
@@ -106,19 +106,16 @@ async function scrapeInjuredPlayers() {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
     );
 
-    await page.goto('https://puckpedia.com/injuries', {
+    await page.goto('https://www.espn.com/nhl/injuries', {
         waitUntil: 'networkidle2',
-        timeout: 10000
+        timeout: 60000
     });
 
     const injuredPlayers = await page.evaluate(() => {
         const players = [];
-        const table = document.querySelector('.pp_table');
-        table.querySelectorAll('.pp_link').forEach(element => {
-            // Schuldt, Jimmy
-            let name = element.innerText;
-            const [last, first] = name.split(',');
-            players.push(first.trim() + ' ' + last.trim());
+        const rows = document.querySelectorAll('.Table__TD > a.AnchorLink');
+        rows.forEach(row => {
+            players.push({name: row.textContent, id: row.href.split('/').pop()});
         });
         return players;
     });
@@ -132,7 +129,7 @@ async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
     const page = await browser.newPage();
     await page.goto('https://hockeychallengehelper.com/', {waitUntil: 'networkidle2'});
 
-    const rounds = await page.evaluate(() => {
+    const playersInRound = await page.evaluate(() => {
         const tables = document.querySelectorAll('.player-table');
         const picks = [];
 
@@ -155,21 +152,20 @@ async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
 
         return picks;
     });
-
     await browser.close();
 
-    const filteredPlayerData = rounds.map(round => {
-        return round.filter(player => {
-            const pp = allPlayerStats.find((ps) => ps.playerId == player.id);
-            if (injuredPlayers.includes(pp.skaterFullName)) {
-                console.warn(`🚨 ${pp.skaterFullName} is injured!`);
-                return false;
-            } 
-            return true;
-        });
-    });
-
-    return filteredPlayerData;
+    return playersInRound.reduce((acc, round, index) => {
+        acc[index] = round.map(player => {
+            const fullPlayer = allPlayerStats.find(p => p.playerId == player.id);
+            if (fullPlayer && injuredPlayers.map(ip => ip.name).includes(
+              fullPlayer.skaterFullName)) {
+                console.warn(`🚨 ${fullPlayer.skaterFullName} is injured!`);
+                return null;
+            }
+            return fullPlayer;
+        }).filter(Boolean);
+        return acc;
+    }, [[]]);
 }
 
 function calculateScoringProbability(playerStats) {
@@ -231,39 +227,34 @@ async function main() {
 
     const finalChoice = [];
 
-    pickRounds.forEach((pick, index) => {
+    pickRounds.forEach((picks, roundIndex) => {
         const playerAnalysis = [];
 
-        pick.forEach(player => {
-            const playerStats = allPlayerStats.find(p =>
-              p.playerId == player.id
-            );
-
-            if (playerStats) {
-                playerAnalysis.push(analyzePlayer(playerStats));
-            } else {
-                console.log(`Player "${playerStats.skaterFullName}" not found in the database.`);
-            }
+        picks.forEach(player => {
+            playerAnalysis.push(analyzePlayer(player));
         });
 
         playerAnalysis.sort((a, b) => b.score - a.score);
 
         // console.log('\nPlayer Analysis Results:');
         // console.log('------------------------');
-        // playerAnalysis.forEach((player, index) => {
-        //     console.log(`${index + 1}. ${player.name}`);
-        //     console.log(`   Score: ${player.score}`);
-        //     console.log(`   Goals: ${player.stats.goals}`);
-        //     console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
-        //     console.log(`   Points: ${player.stats.points}`);
-        //     console.log(`   Games Played: ${player.stats.gamesPlayed}`);
-        //     console.log(`   Team: ${player.stats.team}`);
-        //     console.log('------------------------');
-        // });
+        console.log(`Round ${roundIndex+1}:`);
+        playerAnalysis.forEach((player, index) => {
+            console.log(`${index + 1}. ${player.name}`);
+            console.log(`   Score: ${player.score}`);
+            console.log(`   Goals: ${player.stats.goals}`);
+            console.log(`   Plus/Minus: ${player.stats.plusMinus}`);
+            console.log(`   Points: ${player.stats.points}`);
+            console.log(`   Games Played: ${player.stats.gamesPlayed}`);
+            console.log(`   Team: ${player.stats.team}`);
+            console.log('------------------------');
+        });
 
         if (playerAnalysis.length > 0) {
             finalChoice.push(playerAnalysis[0].name);
         }
+
+        console.log('\n');
     });
 
     finalChoice.forEach((choice, index) => {
