@@ -6,6 +6,16 @@ import path from 'path';
 import os from 'os';
 import {format} from 'date-fns';
 import puppeteer from 'puppeteer';
+import nodemailer from 'nodemailer';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+// Get the directory where the script is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env file from the script's directory
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
 const HOME_DIR = path.join(os.homedir(), '.tims');
@@ -213,6 +223,67 @@ function analyzePlayer(playerStats) {
     };
 }
 
+async function sendEmailReport(rounds, finalChoices) {
+    // Create a transporter using Gmail
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_APP_PASSWORD
+        }
+    });
+
+    // Get recipients from env and split into array
+    const recipients = process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim());
+
+    // Build the email content
+    let emailContent = '<h2>NHL Player Analysis Report</h2>\n\n';
+    
+    rounds.forEach((round, roundIndex) => {
+        emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
+        emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
+        emailContent += '<tr><th>Rank</th><th>Player</th><th>Probability</th><th>Goals</th><th>+/-</th><th>Games</th><th>Points</th><th>Team</th></tr>\n';
+        
+        round.forEach((player, index) => {
+            emailContent += `<tr>
+                <td>${index + 1}</td>
+                <td>${player.name}</td>
+                <td>${player.prob}%</td>
+                <td>${player.stats.goals}</td>
+                <td>${player.stats.plusMinus}</td>
+                <td>${player.stats.gamesPlayed}</td>
+                <td>${player.stats.points}</td>
+                <td>${player.stats.team}</td>
+            </tr>\n`;
+        });
+        
+        emailContent += '</table>\n\n';
+    });
+
+    emailContent += '<h3>Final Choices</h3>\n';
+    emailContent += '<ul>\n';
+    finalChoices.forEach((choice, index) => {
+        emailContent += `<li>Round ${index + 1}: ${choice}</li>\n`;
+    });
+    emailContent += '</ul>';
+
+    // Configure email options
+    const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: recipients,
+        subject: `NHL Player Analysis Report - ${format(new Date(), 'yyyy-MM-dd')}`,
+        html: emailContent
+    };
+
+    // Send the email
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log('Analysis report email sent successfully');
+    } catch (error) {
+        console.error('Error sending email:', error);
+    }
+}
+
 async function main() {
     console.log('Initializing NHL player stats analyzer...');
     const allPlayerStats = await fetchAllPlayerStats();
@@ -226,6 +297,7 @@ async function main() {
     const pickRounds = await scrapePlayerNames(injuredPlayers, allPlayerStats);
 
     const finalChoice = [];
+    const analysisResults = [];
 
     pickRounds.forEach((picks, roundIndex) => {
         const playerAnalysis = [];
@@ -236,8 +308,6 @@ async function main() {
 
         playerAnalysis.sort((a, b) => b.prob - a.prob);
 
-        // console.log('\nPlayer Analysis Results:');
-        // console.log('------------------------');
         console.log(`Round ${roundIndex+1}:`);
         playerAnalysis.forEach((player, index) => {
             console.log(`${index + 1}. ${player.name} - ${player.prob}%`);
@@ -247,12 +317,16 @@ async function main() {
             finalChoice.push(playerAnalysis[0].name);
         }
 
+        analysisResults.push(playerAnalysis);
         console.log('\n');
     });
 
     finalChoice.forEach((choice, index) => {
         console.log(`Round ${index + 1}: ${choice}`);
     });
+
+    // Send email report
+    await sendEmailReport(analysisResults, finalChoice);
 }
 
 main();

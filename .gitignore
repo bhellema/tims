@@ -3,3 +3,4 @@ picks/
 data/
 package-lock.json
 .idea
+.env
