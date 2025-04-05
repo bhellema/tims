@@ -21,6 +21,7 @@ const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
 const HOME_DIR = path.join(os.homedir(), '.tims');
 const DATA_DIR = path.join(HOME_DIR, 'data');
 const PICKS_BASE_DIR = path.join(HOME_DIR, 'picks');
+let teams;
 
 if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -29,12 +30,12 @@ if (!fs.existsSync(PICKS_BASE_DIR)) {
     fs.mkdirSync(PICKS_BASE_DIR, { recursive: true });
 }
 
-function getTodayFilename() {
-    return path.join(DATA_DIR, `${format(new Date(), 'yyyy-MM-dd')}.json`);
+function getPlayerDailyStats() {
+    return path.join(DATA_DIR, `${format(new Date(), 'yyyy-MM-dd')}-players.json`);
 }
 
-function getLatestDataFile() {
-    const files = fs.readdirSync(DATA_DIR).filter(file => file.endsWith('.json'));
+function getLatestPlayerDailyStats() {
+    const files = fs.readdirSync(DATA_DIR).filter(file => file.endsWith('-players.json'));
     if (files.length === 0) return null;
     files.sort((a, b) => b.localeCompare(a));
     return path.join(DATA_DIR, files[0]);
@@ -59,13 +60,53 @@ function getNextPicksFilename() {
     return filename;
 }
 
+async function fetchAllTeamSchedules(teams) {
+    console.log('Checking team schedules...');
+    
+    for (const team of teams) {
+        const scheduleFile = path.join(DATA_DIR, `${team}-schedule.json`);
+        
+        // Skip if schedule file already exists
+        if (fs.existsSync(scheduleFile)) {
+            continue;
+        }
+
+        console.log(`Fetching schedule for ${team}...`);
+        try {
+            const response = await fetch(`https://api-web.nhle.com/v1/club-schedule-season/${team}/20242025`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const scheduleData = await response.json();
+            
+            // Write schedule to file
+            fs.writeFileSync(scheduleFile, JSON.stringify(scheduleData, null, 2), 'utf8');
+            console.log(`Saved schedule for ${team}`);
+            
+            // Add a small delay between requests to be nice to the API
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+        } catch (error) {
+            console.error(`Error fetching schedule for ${team}:`, error);
+        }
+    }
+    
+    console.log('Completed fetching team schedules');
+}
+
 async function fetchAllPlayerStats() {
-    const todayFile = getTodayFilename();
-    const latestFile = getLatestDataFile();
+    const todayFile = getPlayerDailyStats();
+    const latestFile = getLatestPlayerDailyStats();
 
     if (latestFile && latestFile === todayFile && fs.existsSync(todayFile)) {
         console.log('Using cached player data from today...');
-        return JSON.parse(fs.readFileSync(todayFile, 'utf8'));
+        const data = JSON.parse(fs.readFileSync(todayFile, 'utf8'));
+        teams = data.map(player => player.teamAbbrevs.split(',').pop().trim())
+            .filter((team, index, self) => self.indexOf(team) === index)
+            .sort();
+        return data;
     }
 
     console.log('Fetching new player data...');
@@ -104,7 +145,10 @@ async function fetchAllPlayerStats() {
         }
     }
 
-    console.log(`Completed fetching all players. Total players: ${allPlayers.length}`);
+    teams = data.map(player => player.teamAbbrevs.split(',').pop().trim())
+        .filter((team, index, self) => self.indexOf(team) === index)
+        .sort();
+
     fs.writeFileSync(todayFile, JSON.stringify(allPlayers, null, 2), 'utf8');
     return allPlayers;
 }
@@ -207,10 +251,66 @@ function calculateScoringProbability(playerStats) {
     return Math.min(Math.max(scoreProbability, 0), 100).toFixed(2);
 }
 
-function analyzePlayer(playerStats) {
-    const prob = calculateScoringProbability(playerStats);
+// Add this function to calculate team advantage based on standings
+function calculateTeamAdvantage(playerTeam, opposingTeam, standings) {
+    // Find the divisions and positions of both teams
+    let playerTeamRank = null;
+    let opposingTeamRank = null;
+    let playerDivision = null;
+    let opposingDivision = null;
+
+    for (const [division, teams] of Object.entries(standings)) {
+        const playerIdx = teams.findIndex(t => t.name === playerTeam);
+        const opposingIdx = teams.findIndex(t => t.name === opposingTeam);
+        
+        if (playerIdx !== -1) {
+            playerTeamRank = playerIdx + 1;
+            playerDivision = division;
+        }
+        if (opposingIdx !== -1) {
+            opposingTeamRank = opposingIdx + 1;
+            opposingDivision = division;
+        }
+    }
+
+    // Calculate advantage based on ranking difference
+    // Teams in better positions get a positive adjustment
+    if (playerTeamRank && opposingTeamRank) {
+        // If teams are in the same division, direct comparison
+        if (playerDivision === opposingDivision) {
+            return (opposingTeamRank - playerTeamRank) * 0.05; // 5% advantage per position difference
+        } else {
+            // For teams in different divisions, compare relative positions
+            return (opposingTeamRank - playerTeamRank) * 0.03; // 3% advantage per position difference
+        }
+    }
+    return 0;
+}
+
+// Modify the analyzePlayer function to include team advantage
+function analyzePlayer(playerStats, todaysGames, standings) {
+    let prob = calculateScoringProbability(playerStats);
+    
+    // Find if the player's team is playing today
+    const playerTeam = playerStats.teamAbbrevs.split(',').pop().trim();
+    const game = todaysGames.find(g => 
+        g.homeTeam === playerTeam || g.awayTeam === playerTeam
+    );
+
+    if (game) {
+        const opposingTeam = game.homeTeam === playerTeam ? game.awayTeam : game.homeTeam;
+        const teamAdvantage = calculateTeamAdvantage(playerTeam, opposingTeam, standings);
+        
+        // Adjust probability based on team advantage
+        prob = parseFloat(prob) * (1 + teamAdvantage);
+        
+        // Ensure probability stays within 0-100 range
+        prob = Math.min(Math.max(prob, 0), 100).toFixed(2);
+    }
+
     return {
         name: playerStats.skaterFullName,
+        team: playerTeam,
         prob,
         stats: {
             goals: playerStats.goals,
@@ -223,7 +323,7 @@ function analyzePlayer(playerStats) {
     };
 }
 
-async function sendEmailReport(rounds, finalChoices) {
+async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
     // Create a transporter using Gmail
     const transporter = nodemailer.createTransport({
         service: 'gmail',
@@ -241,6 +341,68 @@ async function sendEmailReport(rounds, finalChoices) {
     
     rounds.forEach((round, roundIndex) => {
         emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
+        
+        // Add detailed analysis for top 3 players
+        emailContent += '<h4>Top Picks Analysis</h4>\n';
+        emailContent += '<div style="margin-bottom: 20px;">\n';
+        
+        // Get top 3 players
+        const top3 = round.slice(0, 3);
+        top3.forEach((player, index) => {
+            // Find player's game today
+            const game = todaysGames.find(g => 
+                g.homeTeam === player.team || g.awayTeam === player.team
+            );
+            
+            let reasoning = '';
+            if (game) {
+                const isHome = game.homeTeam === player.team;
+                const opponent = isHome ? game.awayTeam : game.homeTeam;
+                
+                // Get team standings info
+                let teamStanding = null;
+                let oppStanding = null;
+                let teamDivision = null;
+                
+                for (const [division, teams] of Object.entries(standings)) {
+                    const teamIdx = teams.findIndex(t => t.name === player.team);
+                    const oppIdx = teams.findIndex(t => t.name === opponent);
+                    if (teamIdx !== -1) {
+                        teamStanding = teamIdx + 1;
+                        teamDivision = division;
+                    }
+                    if (oppIdx !== -1) {
+                        oppStanding = oppIdx + 1;
+                    }
+                }
+
+                reasoning = `
+                    <strong>${index + 1}. ${player.name} (${player.team}) - ${player.prob}%</strong><br>
+                    <ul>
+                        <li>Season Performance: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
+                        <li>Average ice time: ${(player.stats.toi / 60).toFixed(2)} minutes</li>
+                        <li>Playing ${isHome ? 'home' : 'away'} against ${opponent}</li>
+                        <li>Team standing: ${teamStanding}${getOrdinalSuffix(teamStanding)} in ${teamDivision}</li>
+                        <li>Opponent standing: ${oppStanding}${getOrdinalSuffix(oppStanding)} in their division</li>
+                        <li>Plus/Minus: ${player.stats.plusMinus > 0 ? '+' : ''}${player.stats.plusMinus}</li>
+                    </ul>
+                `;
+            } else {
+                reasoning = `
+                    <strong>${index + 1}. ${player.name} (${player.team}) - ${player.prob}%</strong><br>
+                    <ul>
+                        <li>No game scheduled for today</li>
+                        <li>Season stats: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
+                    </ul>
+                `;
+            }
+            emailContent += reasoning;
+        });
+        
+        emailContent += '</div>\n';
+        
+        // Add the full round table
+        emailContent += '<h4>All Players in Round</h4>\n';
         emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
         emailContent += '<tr><th>Rank</th><th>Player</th><th>Probability</th><th>Goals</th><th>+/-</th><th>Games</th><th>Points</th><th>Team</th></tr>\n';
         
@@ -253,7 +415,7 @@ async function sendEmailReport(rounds, finalChoices) {
                 <td>${player.stats.plusMinus}</td>
                 <td>${player.stats.gamesPlayed}</td>
                 <td>${player.stats.points}</td>
-                <td>${player.stats.team}</td>
+                <td>${player.team}</td>
             </tr>\n`;
         });
         
@@ -284,6 +446,112 @@ async function sendEmailReport(rounds, finalChoices) {
     }
 }
 
+// Helper function for ordinal suffixes
+function getOrdinalSuffix(num) {
+    const j = num % 10;
+    const k = num % 100;
+    if (j == 1 && k != 11) {
+        return "st";
+    }
+    if (j == 2 && k != 12) {
+        return "nd";
+    }
+    if (j == 3 && k != 13) {
+        return "rd";
+    }
+    return "th";
+}
+
+async function getTodaysStandings() {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    
+    try {
+        const response = await fetch(`https://api-web.nhle.com/v1/standings/${today}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Group teams by division
+        const divisionStandings = data.standings.reduce((acc, team) => {
+            const divName = team.divisionName;
+            if (!acc[divName]) {
+                acc[divName] = [];
+            }
+            acc[divName].push({
+                name: team.teamAbbrev.default,
+                points: team.points,
+                gamesPlayed: team.gamesPlayed
+            });
+            return acc;
+        }, {});
+
+        // Sort teams in each division by points (and games played as tiebreaker)
+        for (const division in divisionStandings) {
+            divisionStandings[division].sort((a, b) => {
+                if (b.points !== a.points) {
+                    return b.points - a.points;
+                }
+                return a.gamesPlayed - b.gamesPlayed;
+            });
+        }
+
+        return divisionStandings;
+    } catch (error) {
+        console.error('Error fetching standings:', error);
+        return null;
+    }
+}
+
+function getTodaysGames() {
+    console.log('Checking for today\'s games...');
+    
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const games = new Map(); // Using Map to avoid duplicate games
+    
+    // Read all schedule files from the data directory
+    const scheduleFiles = fs.readdirSync(DATA_DIR)
+        .filter(file => file.endsWith('-schedule.json'));
+    
+    for (const file of scheduleFiles) {
+        const scheduleData = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8'));
+        
+        // Look through the games array in the schedule
+        for (const game of scheduleData.games) {
+            const gameDate = game.gameDate.split('T')[0]; // Extract just the date part
+            
+            if (gameDate === today) {
+                const gameKey = `${game.homeTeam.abbrev}-${game.awayTeam.abbrev}`;
+                if (!games.has(gameKey)) {
+                    games.set(gameKey, {
+                        homeTeam: game.homeTeam.abbrev,
+                        awayTeam: game.awayTeam.abbrev,
+                        startTime: new Date(game.gameDate).toLocaleTimeString(),
+                        venue: game.venue.default
+                    });
+                }
+            }
+        }
+    }
+    
+    const todaysGames = Array.from(games.values());
+    
+    if (todaysGames.length === 0) {
+        console.log('No games scheduled for today.');
+    } else {
+        console.log(`\nGames scheduled for ${today}:`);
+        console.log('------------------------');
+        todaysGames.forEach(game => {
+            console.log(`${game.awayTeam} @ ${game.homeTeam} - ${game.startTime}`);
+            console.log(`Venue: ${game.venue}`);
+            console.log('------------------------');
+        });
+    }
+    
+    return todaysGames;
+}
+
 async function main() {
     console.log('Initializing NHL player stats analyzer...');
     const allPlayerStats = await fetchAllPlayerStats();
@@ -292,6 +560,14 @@ async function main() {
         console.log('Failed to fetch player stats. Exiting...');
         return;
     }
+
+    const teams = allPlayerStats.map(player => player.teamAbbrevs.split(',').pop().trim())
+        .filter((team, index, self) => self.indexOf(team) === index)
+        .sort();
+    
+    await fetchAllTeamSchedules(teams);
+    const todaysGames = getTodaysGames();
+    const standings = await getTodaysStandings();
 
     const injuredPlayers = await scrapeInjuredPlayers();
     const pickRounds = await scrapePlayerNames(injuredPlayers, allPlayerStats);
@@ -303,14 +579,14 @@ async function main() {
         const playerAnalysis = [];
 
         picks.forEach(player => {
-            playerAnalysis.push(analyzePlayer(player));
+            playerAnalysis.push(analyzePlayer(player, todaysGames, standings));
         });
 
         playerAnalysis.sort((a, b) => b.prob - a.prob);
 
         console.log(`Round ${roundIndex+1}:`);
         playerAnalysis.forEach((player, index) => {
-            console.log(`${index + 1}. ${player.name} - ${player.prob}%`);
+            console.log(`${index + 1}. ${player.name} (${player.team}) - ${player.prob}%`);
         });
 
         if (playerAnalysis.length > 0) {
@@ -325,8 +601,8 @@ async function main() {
         console.log(`Round ${index + 1}: ${choice}`);
     });
 
-    // Send email report
-    await sendEmailReport(analysisResults, finalChoice);
+    // Send email report with additional data
+    await sendEmailReport(analysisResults, finalChoice, todaysGames, standings);
 }
 
 main();
