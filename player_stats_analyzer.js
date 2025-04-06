@@ -338,7 +338,7 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
     const recipients = process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim());
 
     // Build the email content
-    let emailContent = '<h2>NHL Player Analysis Report</h2>\n\n';
+    let emailContent = '<h2>Tim\'s Player Analysis Report</h2>\n\n';
 
     rounds.forEach((round, roundIndex) => {
         emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
