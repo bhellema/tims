@@ -124,11 +124,10 @@ async function fetchAllPlayerStats() {
             cayenneExp: 'gameTypeId=2 and seasonId<=20242025 and seasonId>=20242025'
         });
 
-        let players;
         try {
             const response = await fetch(`${API_URL}?${params}`);
             const data = await response.json();
-            players = data.data;
+            const players = data.data;
 
             if (players.length > 0) {
                 allPlayers = [...allPlayers, ...players];
