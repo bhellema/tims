@@ -4,7 +4,7 @@ import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import {format} from 'date-fns';
+import { format } from 'date-fns';
 import puppeteer from 'puppeteer';
 import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
@@ -62,10 +62,10 @@ function getNextPicksFilename() {
 
 async function fetchAllTeamSchedules(teams) {
     console.log('Checking team schedules...');
-    
+
     for (const team of teams) {
         const scheduleFile = path.join(DATA_DIR, `${team}-schedule.json`);
-        
+
         // Skip if schedule file already exists
         if (fs.existsSync(scheduleFile)) {
             continue;
@@ -74,25 +74,25 @@ async function fetchAllTeamSchedules(teams) {
         console.log(`Fetching schedule for ${team}...`);
         try {
             const response = await fetch(`https://api-web.nhle.com/v1/club-schedule-season/${team}/20242025`);
-            
+
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-            
+
             const scheduleData = await response.json();
-            
+
             // Write schedule to file
             fs.writeFileSync(scheduleFile, JSON.stringify(scheduleData, null, 2), 'utf8');
             console.log(`Saved schedule for ${team}`);
-            
+
             // Add a small delay between requests to be nice to the API
             await new Promise(resolve => setTimeout(resolve, 100));
-            
+
         } catch (error) {
             console.error(`Error fetching schedule for ${team}:`, error);
         }
     }
-    
+
     console.log('Completed fetching team schedules');
 }
 
@@ -169,7 +169,7 @@ async function scrapeInjuredPlayers() {
         const players = [];
         const rows = document.querySelectorAll('.Table__TD > a.AnchorLink');
         rows.forEach(row => {
-            players.push({name: row.textContent, id: row.href.split('/').pop()});
+            players.push({ name: row.textContent, id: row.href.split('/').pop() });
         });
         return players;
     });
@@ -181,7 +181,7 @@ async function scrapeInjuredPlayers() {
 async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
-    await page.goto('https://hockeychallengehelper.com/', {waitUntil: 'networkidle2'});
+    await page.goto('https://hockeychallengehelper.com/', { waitUntil: 'networkidle2' });
 
     const playersInRound = await page.evaluate(() => {
         const tables = document.querySelectorAll('.player-table');
@@ -212,7 +212,7 @@ async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
         acc[index] = round.map(player => {
             const fullPlayer = allPlayerStats.find(p => p.playerId == player.id);
             if (fullPlayer && injuredPlayers.map(ip => ip.name).includes(
-              fullPlayer.skaterFullName)) {
+                fullPlayer.skaterFullName)) {
                 console.warn(`🚨 ${fullPlayer.skaterFullName} is injured!`);
                 return null;
             }
@@ -238,14 +238,14 @@ function calculateScoringProbability(playerStats) {
     const toiInMinutes = playerStats.timeOnIcePerGame / 60;
 
     let scoreProbability =
-      (toiInMinutes * weights.toi) +
-      (playerStats.shots * weights.sog) +
-      (playerStats.shootingPct * 100 * weights.shPercent) + // Convert shooting % to whole number
-      (playerStats.ppGoals * weights.ppGoals) +
-      (playerStats.pointsPerGame * weights.pointsPerGame) +
-      (playerStats.plusMinus * weights.plusMinus) +
-      (playerStats.gameWinningGoals * weights.gameWinningGoals) +
-      (playerStats.goals * weights.goals);
+        (toiInMinutes * weights.toi) +
+        (playerStats.shots * weights.sog) +
+        (playerStats.shootingPct * 100 * weights.shPercent) + // Convert shooting % to whole number
+        (playerStats.ppGoals * weights.ppGoals) +
+        (playerStats.pointsPerGame * weights.pointsPerGame) +
+        (playerStats.plusMinus * weights.plusMinus) +
+        (playerStats.gameWinningGoals * weights.gameWinningGoals) +
+        (playerStats.goals * weights.goals);
 
     // Normalize to a percentage (0-100 scale)
     return Math.min(Math.max(scoreProbability, 0), 100).toFixed(2);
@@ -262,7 +262,7 @@ function calculateTeamAdvantage(playerTeam, opposingTeam, standings) {
     for (const [division, teams] of Object.entries(standings)) {
         const playerIdx = teams.findIndex(t => t.name === playerTeam);
         const opposingIdx = teams.findIndex(t => t.name === opposingTeam);
-        
+
         if (playerIdx !== -1) {
             playerTeamRank = playerIdx + 1;
             playerDivision = division;
@@ -290,20 +290,20 @@ function calculateTeamAdvantage(playerTeam, opposingTeam, standings) {
 // Modify the analyzePlayer function to include team advantage
 function analyzePlayer(playerStats, todaysGames, standings) {
     let prob = calculateScoringProbability(playerStats);
-    
+
     // Find if the player's team is playing today
     const playerTeam = playerStats.teamAbbrevs.split(',').pop().trim();
-    const game = todaysGames.find(g => 
+    const game = todaysGames.find(g =>
         g.homeTeam === playerTeam || g.awayTeam === playerTeam
     );
 
     if (game) {
         const opposingTeam = game.homeTeam === playerTeam ? game.awayTeam : game.homeTeam;
         const teamAdvantage = calculateTeamAdvantage(playerTeam, opposingTeam, standings);
-        
+
         // Adjust probability based on team advantage
         prob = parseFloat(prob) * (1 + teamAdvantage);
-        
+
         // Ensure probability stays within 0-100 range
         prob = Math.min(Math.max(prob, 0), 100).toFixed(2);
     }
@@ -311,6 +311,7 @@ function analyzePlayer(playerStats, todaysGames, standings) {
     return {
         name: playerStats.skaterFullName,
         team: playerTeam,
+        position: playerStats.positionCode,
         prob,
         stats: {
             goals: playerStats.goals,
@@ -338,32 +339,35 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
 
     // Build the email content
     let emailContent = '<h2>NHL Player Analysis Report</h2>\n\n';
-    
+
     rounds.forEach((round, roundIndex) => {
         emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
-        
+
         // Add detailed analysis for top 3 players
         emailContent += '<h4>Top Picks Analysis</h4>\n';
         emailContent += '<div style="margin-bottom: 20px;">\n';
-        
+
         // Get top 3 players
         const top3 = round.slice(0, 3);
         top3.forEach((player, index) => {
-            // Find player's game today
-            const game = todaysGames.find(g => 
+            const game = todaysGames.find(g =>
                 g.homeTeam === player.team || g.awayTeam === player.team
             );
-            
+
+            // Calculate TOI
+            const avgTOIMinutes = Math.floor(player.stats.toi / 60);
+            const avgTOISeconds = Math.round(player.stats.toi % 60);
+
             let reasoning = '';
             if (game) {
                 const isHome = game.homeTeam === player.team;
                 const opponent = isHome ? game.awayTeam : game.homeTeam;
-                
+
                 // Get team standings info
                 let teamStanding = null;
                 let oppStanding = null;
                 let teamDivision = null;
-                
+
                 for (const [division, teams] of Object.entries(standings)) {
                     const teamIdx = teams.findIndex(t => t.name === player.team);
                     const oppIdx = teams.findIndex(t => t.name === opponent);
@@ -377,10 +381,11 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
                 }
 
                 reasoning = `
-                    <strong>${index + 1}. ${player.name} (${player.team}) - ${player.prob}%</strong><br>
+                    <strong>${index + 1}. ${player.name} (${player.position} - ${player.team}) - ${player.prob}%</strong><br>
                     <ul>
+                        <li>Position: ${getFullPosition(player.position)}</li>
                         <li>Season Performance: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
-                        <li>Average ice time: ${(player.stats.toi / 60).toFixed(2)} minutes</li>
+                        <li>Average ice time per game: ${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</li>
                         <li>Playing ${isHome ? 'home' : 'away'} against ${opponent}</li>
                         <li>Team standing: ${teamStanding}${getOrdinalSuffix(teamStanding)} in ${teamDivision}</li>
                         <li>Opponent standing: ${oppStanding}${getOrdinalSuffix(oppStanding)} in their division</li>
@@ -389,36 +394,46 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
                 `;
             } else {
                 reasoning = `
-                    <strong>${index + 1}. ${player.name} (${player.team}) - ${player.prob}%</strong><br>
+                    <strong>${index + 1}. ${player.name} (${player.position} - ${player.team}) - ${player.prob}%</strong><br>
                     <ul>
+                        <li>Position: ${getFullPosition(player.position)}</li>
                         <li>No game scheduled for today</li>
                         <li>Season stats: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
+                        <li>Average ice time per game: ${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</li>
                     </ul>
                 `;
             }
             emailContent += reasoning;
         });
-        
+
         emailContent += '</div>\n';
-        
+
         // Add the full round table
         emailContent += '<h4>All Players in Round</h4>\n';
         emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
-        emailContent += '<tr><th>Rank</th><th>Player</th><th>Probability</th><th>Goals</th><th>+/-</th><th>Games</th><th>Points</th><th>Team</th></tr>\n';
-        
+        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals</th><th>+/-</th><th>Games</th><th>Points</th><th>Avg TOI</th><th>Team</th></tr>\n';
+
         round.forEach((player, index) => {
-            emailContent += `<tr>
+            const avgTOIMinutes = Math.floor(player.stats.toi / 60);
+            const avgTOISeconds = Math.round(player.stats.toi % 60);
+
+            // Add yellow background for the top pick
+            const backgroundColor = index === 0 ? ' style="background-color: #FFEB3B;"' : '';
+
+            emailContent += `<tr${backgroundColor}>
                 <td>${index + 1}</td>
                 <td>${player.name}</td>
+                <td>${player.position}</td>
                 <td>${player.prob}%</td>
                 <td>${player.stats.goals}</td>
                 <td>${player.stats.plusMinus}</td>
                 <td>${player.stats.gamesPlayed}</td>
                 <td>${player.stats.points}</td>
+                <td>${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</td>
                 <td>${player.team}</td>
             </tr>\n`;
         });
-        
+
         emailContent += '</table>\n\n';
     });
 
@@ -428,6 +443,78 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
         emailContent += `<li>Round ${index + 1}: ${choice}</li>\n`;
     });
     emailContent += '</ul>';
+
+    // Add weighting rules section at the bottom
+    emailContent += `
+        <hr style="margin-top: 30px;">
+        <div style="font-size: 0.8em; color: #666;">
+            <h4>Player Scoring Probability Weighting Rules:</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
+                <tr>
+                    <th style="text-align: left; padding: 4px;">Metric</th>
+                    <th style="text-align: left; padding: 4px;">Weight</th>
+                    <th style="text-align: left; padding: 4px;">Description</th>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Goals</td>
+                    <td style="padding: 4px;">30%</td>
+                    <td style="padding: 4px;">Total goals scored this season</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Shots on Goal</td>
+                    <td style="padding: 4px;">25%</td>
+                    <td style="padding: 4px;">Total shots on goal</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Shooting Percentage</td>
+                    <td style="padding: 4px;">20%</td>
+                    <td style="padding: 4px;">Percentage of shots that result in goals</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Time on Ice</td>
+                    <td style="padding: 4px;">15%</td>
+                    <td style="padding: 4px;">Average time on ice per game</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Power Play Goals</td>
+                    <td style="padding: 4px;">10%</td>
+                    <td style="padding: 4px;">Goals scored during power plays</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Points Per Game</td>
+                    <td style="padding: 4px;">10%</td>
+                    <td style="padding: 4px;">Average points scored per game</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Game Winning Goals</td>
+                    <td style="padding: 4px;">10%</td>
+                    <td style="padding: 4px;">Goals that were game winners</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px;">Plus/Minus</td>
+                    <td style="padding: 4px;">5%</td>
+                    <td style="padding: 4px;">Goal differential while on ice at even strength</td>
+                </tr>
+            </table>
+
+            <h4 style="margin-top: 15px;">Additional Adjustments:</h4>
+            <ul style="margin-top: 5px;">
+                <li>Teams in better standings positions receive an advantage when playing against lower-ranked teams:
+                    <ul>
+                        <li>Same division: 5% advantage per position difference</li>
+                        <li>Different divisions: 3% advantage per position difference</li>
+                    </ul>
+                </li>
+                <li>All probabilities are normalized to ensure they stay within a 0-100% range</li>
+                <li>Players marked as injured are automatically excluded from consideration</li>
+            </ul>
+
+            <p style="font-style: italic; margin-top: 15px;">
+                Note: These weights and adjustments are used to calculate the final probability score for each player. 
+                The actual likelihood of scoring may vary based on additional factors not captured in this model.
+            </p>
+        </div>
+    `;
 
     // Configure email options
     const mailOptions = {
@@ -464,15 +551,15 @@ function getOrdinalSuffix(num) {
 
 async function getTodaysStandings() {
     const today = format(new Date(), 'yyyy-MM-dd');
-    
+
     try {
         const response = await fetch(`https://api-web.nhle.com/v1/standings/${today}`);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
+
         // Group teams by division
         const divisionStandings = data.standings.reduce((acc, team) => {
             const divName = team.divisionName;
@@ -506,21 +593,21 @@ async function getTodaysStandings() {
 
 function getTodaysGames() {
     console.log('Checking for today\'s games...');
-    
+
     const today = format(new Date(), 'yyyy-MM-dd');
     const games = new Map(); // Using Map to avoid duplicate games
-    
+
     // Read all schedule files from the data directory
     const scheduleFiles = fs.readdirSync(DATA_DIR)
         .filter(file => file.endsWith('-schedule.json'));
-    
+
     for (const file of scheduleFiles) {
         const scheduleData = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8'));
-        
+
         // Look through the games array in the schedule
         for (const game of scheduleData.games) {
             const gameDate = game.gameDate.split('T')[0]; // Extract just the date part
-            
+
             if (gameDate === today) {
                 const gameKey = `${game.homeTeam.abbrev}-${game.awayTeam.abbrev}`;
                 if (!games.has(gameKey)) {
@@ -534,9 +621,9 @@ function getTodaysGames() {
             }
         }
     }
-    
+
     const todaysGames = Array.from(games.values());
-    
+
     if (todaysGames.length === 0) {
         console.log('No games scheduled for today.');
     } else {
@@ -548,8 +635,84 @@ function getTodaysGames() {
             console.log('------------------------');
         });
     }
-    
+
     return todaysGames;
+}
+
+function analyzeGoalsAndTOI(allPlayerStats) {
+    // Create array of players with their goals and TOI
+    const playerStats = allPlayerStats.map(player => {
+        const totalTOIMinutes = (player.timeOnIcePerGame * player.gamesPlayed) / 60;
+        return {
+            name: player.skaterFullName,
+            team: player.teamAbbrevs.split(',').pop().trim(),
+            goals: player.goals,
+            gamesPlayed: player.gamesPlayed,
+            totalTOI: totalTOIMinutes,
+            goalsPerHour: (player.goals / totalTOIMinutes) * 60,
+            averageTOIPerGame: player.timeOnIcePerGame / 60
+        };
+    });
+
+    // Sort by goals in descending order
+    playerStats.sort((a, b) => b.goals - a.goals);
+
+    console.log('\nPlayer Goals and Ice Time Analysis');
+    console.log('=================================');
+    console.log('Top 20 Goal Scorers:');
+    console.log('Name\t\tTeam\tGoals\tGames\tAvg TOI\tTotal TOI\tGoals/Hour');
+    console.log('----------------------------------------------------------------');
+
+    playerStats.slice(0, 20).forEach(player => {
+        console.log(
+            `${player.name.padEnd(20)}${player.team.padEnd(8)}${player.goals.toString().padStart(4)}${player.gamesPlayed.toString().padStart(8)}${player.averageTOIPerGame.toFixed(1).padStart(8)}${player.totalTOI.toFixed(1).padStart(12)}${player.goalsPerHour.toFixed(2).padStart(12)}`
+        );
+    });
+
+    // Calculate correlation coefficient between TOI and goals
+    const totalTOIs = playerStats.map(p => p.totalTOI);
+    const goals = playerStats.map(p => p.goals);
+    const correlation = calculateCorrelation(totalTOIs, goals);
+
+    console.log('\nStatistical Analysis:');
+    console.log(`Correlation coefficient between Total TOI and Goals: ${correlation.toFixed(3)}`);
+
+    // Find players with highest goals per hour (minimum 5 games played)
+    const efficientScorers = [...playerStats]
+        .filter(p => p.gamesPlayed >= 5)
+        .sort((a, b) => b.goalsPerHour - a.goalsPerHour);
+
+    console.log('\nTop 10 Most Efficient Scorers (min. 5 games):');
+    console.log('Name\t\tTeam\tGoals\tGames\tAvg TOI\tGoals/Hour');
+    console.log('----------------------------------------------------------------');
+
+    efficientScorers.slice(0, 10).forEach(player => {
+        console.log(
+            `${player.name.padEnd(20)}${player.team.padEnd(8)}${player.goals.toString().padStart(4)}${player.gamesPlayed.toString().padStart(8)}${player.averageTOIPerGame.toFixed(1).padStart(8)}${player.goalsPerHour.toFixed(2).padStart(12)}`
+        );
+    });
+
+    return { playerStats, correlation };
+}
+
+// Helper function to calculate correlation coefficient
+function calculateCorrelation(x, y) {
+    const n = x.length;
+    const sum1 = x.reduce((a, b) => a + b) * y.reduce((a, b) => a + b);
+    const sum2 = x.reduce((a, b) => a + b * b) * y.reduce((a, b) => a + b * b);
+    const sum3 = x.map((xi, i) => xi * y[i]).reduce((a, b) => a + b);
+    return (n * sum3 - sum1) / Math.sqrt((n * sum2 - sum1 * sum1));
+}
+
+// Helper function to convert position codes to full names
+function getFullPosition(positionCode) {
+    const positions = {
+        'L': 'Left Wing',
+        'C': 'Center',
+        'R': 'Right Wing',
+        'D': 'Defense'
+    };
+    return positions[positionCode] || positionCode;
 }
 
 async function main() {
@@ -561,10 +724,13 @@ async function main() {
         return;
     }
 
+    // Add the TOI analysis
+    const toiAnalysis = analyzeGoalsAndTOI(allPlayerStats);
+
     const teams = allPlayerStats.map(player => player.teamAbbrevs.split(',').pop().trim())
         .filter((team, index, self) => self.indexOf(team) === index)
         .sort();
-    
+
     await fetchAllTeamSchedules(teams);
     const todaysGames = getTodaysGames();
     const standings = await getTodaysStandings();
@@ -584,7 +750,7 @@ async function main() {
 
         playerAnalysis.sort((a, b) => b.prob - a.prob);
 
-        console.log(`Round ${roundIndex+1}:`);
+        console.log(`Round ${roundIndex + 1}:`);
         playerAnalysis.forEach((player, index) => {
             console.log(`${index + 1}. ${player.name} (${player.team}) - ${player.prob}%`);
         });

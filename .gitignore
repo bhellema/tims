@@ -4,3 +4,4 @@ data/
 package-lock.json
 .idea
 .env
+settings.json
