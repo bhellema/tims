@@ -124,10 +124,11 @@ async function fetchAllPlayerStats() {
             cayenneExp: 'gameTypeId=2 and seasonId<=20242025 and seasonId>=20242025'
         });
 
+        let players;
         try {
             const response = await fetch(`${API_URL}?${params}`);
             const data = await response.json();
-            const players = data.data;
+            players = data.data;
 
             if (players.length > 0) {
                 allPlayers = [...allPlayers, ...players];
@@ -145,7 +146,7 @@ async function fetchAllPlayerStats() {
         }
     }
 
-    teams = data.map(player => player.teamAbbrevs.split(',').pop().trim())
+    teams = allPlayers.map(player => player.teamAbbrevs.split(',').pop().trim())
         .filter((team, index, self) => self.indexOf(team) === index)
         .sort();
 
