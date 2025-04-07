@@ -340,6 +340,23 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
     // Build the email content
     let emailContent = '<h2>Tim\'s Player Analysis Report</h2>\n\n';
 
+    // Add daily schedule section
+    emailContent += '<h3>Today\'s NHL Schedule</h3>\n';
+    if (todaysGames.length > 0) {
+        emailContent += '<table border="1" style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">\n';
+        emailContent += '<tr><th>Time</th><th>Matchup</th><th>Venue</th></tr>\n';
+        todaysGames.forEach(game => {
+            emailContent += `<tr>
+                <td>${game.startTime}</td>
+                <td>${game.awayTeam} @ ${game.homeTeam}</td>
+                <td>${game.venue}</td>
+            </tr>\n`;
+        });
+        emailContent += '</table>\n\n';
+    } else {
+        emailContent += '<p>No games scheduled for today.</p>\n\n';
+    }
+
     rounds.forEach((round, roundIndex) => {
         emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
 
@@ -611,10 +628,19 @@ function getTodaysGames() {
             if (gameDate === today) {
                 const gameKey = `${game.homeTeam.abbrev}-${game.awayTeam.abbrev}`;
                 if (!games.has(gameKey)) {
+                    // Convert game time to Eastern Time
+                    const gameDateTime = new Date(game.startTimeUTC);
+                    const easternTime = gameDateTime.toLocaleTimeString('en-US', {
+                        timeZone: 'America/Toronto',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                    });
+
                     games.set(gameKey, {
                         homeTeam: game.homeTeam.abbrev,
                         awayTeam: game.awayTeam.abbrev,
-                        startTime: new Date(game.gameDate).toLocaleTimeString(),
+                        startTime: easternTime,
                         venue: game.venue.default
                     });
                 }
@@ -624,13 +650,20 @@ function getTodaysGames() {
 
     const todaysGames = Array.from(games.values());
 
+    // Sort games by start time
+    todaysGames.sort((a, b) => {
+        const timeA = new Date(`1970-01-01 ${a.startTime}`);
+        const timeB = new Date(`1970-01-01 ${b.startTime}`);
+        return timeA - timeB;
+    });
+
     if (todaysGames.length === 0) {
         console.log('No games scheduled for today.');
     } else {
-        console.log(`\nGames scheduled for ${today}:`);
+        console.log(`\nGames scheduled for ${today} (Eastern Time):`);
         console.log('------------------------');
         todaysGames.forEach(game => {
-            console.log(`${game.awayTeam} @ ${game.homeTeam} - ${game.startTime}`);
+            console.log(`${game.awayTeam} @ ${game.homeTeam} - ${game.startTime} ET`);
             console.log(`Venue: ${game.venue}`);
             console.log('------------------------');
         });
