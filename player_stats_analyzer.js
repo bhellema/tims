@@ -17,6 +17,40 @@ const __dirname = path.dirname(__filename);
 // Load .env file from the script's directory
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
+// ============================================================================
+// CONFIGURATION - Change these settings to modify ranking behavior
+// ============================================================================
+
+// NHL Season Configuration
+const CURRENT_SEASON = '20252026'; // Current NHL season (2025-26)
+const COMBINE_SEASONS = true; // Set to true to combine 2024-25 and 2025-26 season data
+
+// Seasons that are completed and should be cached permanently (never change)
+const COMPLETED_SEASONS = ['20242025']; // Add completed seasons here
+
+// Available ranking methods:
+// 'original' - Original weighted sum method (default)
+// 'zscore' - Z-Score normalization method
+// 'percentile' - Percentile-based ranking method
+// 'expected' - Expected goals method
+// 'composite' - Composite index method
+// 'elo' - Elo-style rating method
+const DEFAULT_RANKING_METHOD = 'original';
+
+// Set to true to show comparison of all methods
+const SHOW_METHOD_COMPARISON = true;
+
+// Set to true to show detailed method descriptions
+const SHOW_METHOD_DESCRIPTIONS = true;
+
+// Set to true to force refresh all team schedules (useful if schedules are outdated)
+const FORCE_REFRESH_SCHEDULES = false;
+
+// Set to true to save picks to files in the picks folder
+const SAVE_PICKS_TO_FILES = true;
+
+// ============================================================================
+
 const API_URL = 'https://api.nhle.com/stats/rest/en/skater/summary';
 const HOME_DIR = path.join(os.homedir(), '.tims');
 const DATA_DIR = path.join(HOME_DIR, 'data');
@@ -32,6 +66,10 @@ if (!fs.existsSync(PICKS_BASE_DIR)) {
 
 function getPlayerDailyStats() {
     return path.join(DATA_DIR, `${format(new Date(), 'yyyy-MM-dd')}-players.json`);
+}
+
+function getSeasonStatsFile(seasonId) {
+    return path.join(DATA_DIR, `${seasonId}-season-players.json`);
 }
 
 function getLatestPlayerDailyStats() {
@@ -63,17 +101,22 @@ function getNextPicksFilename() {
 async function fetchAllTeamSchedules(teams) {
     console.log('Checking team schedules...');
 
+    let schedulesFetched = 0;
+    let schedulesSkipped = 0;
+
     for (const team of teams) {
         const scheduleFile = path.join(DATA_DIR, `${team}-schedule.json`);
 
-        // Skip if schedule file already exists
-        if (fs.existsSync(scheduleFile)) {
+        // Skip if schedule file already exists (unless force refresh is enabled)
+        if (fs.existsSync(scheduleFile) && !FORCE_REFRESH_SCHEDULES) {
+            schedulesSkipped++;
+            console.log(`Schedule for ${team} already exists, skipping...`);
             continue;
         }
 
         console.log(`Fetching schedule for ${team}...`);
         try {
-            const response = await fetch(`https://api-web.nhle.com/v1/club-schedule-season/${team}/20242025`);
+            const response = await fetch(`https://api-web.nhle.com/v1/club-schedule-season/${team}/20252026`);
 
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -84,6 +127,7 @@ async function fetchAllTeamSchedules(teams) {
             // Write schedule to file
             fs.writeFileSync(scheduleFile, JSON.stringify(scheduleData, null, 2), 'utf8');
             console.log(`Saved schedule for ${team}`);
+            schedulesFetched++;
 
             // Add a small delay between requests to be nice to the API
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -93,7 +137,7 @@ async function fetchAllTeamSchedules(teams) {
         }
     }
 
-    console.log('Completed fetching team schedules');
+    console.log(`Completed fetching team schedules: ${schedulesFetched} fetched, ${schedulesSkipped} skipped`);
 }
 
 async function fetchAllPlayerStats() {
@@ -109,7 +153,71 @@ async function fetchAllPlayerStats() {
         return data;
     }
 
-    console.log('Fetching new player data...');
+    console.log('Fetching combined player data from 2024-25 and 2025-26 seasons...');
+
+    // Fetch both seasons
+    const season202425 = await fetchPlayerStatsForSeason('20242025');
+    const season202526 = await fetchPlayerStatsForSeason('20252026');
+
+    // Combine the data
+    let allPlayers = [];
+    let seasonStats = { '20242025': 0, '20252026': 0 };
+
+    if (season202425 && season202425.length > 0) {
+        allPlayers = [...allPlayers, ...season202425];
+        seasonStats['20242025'] = season202425.length;
+        console.log(`Loaded ${season202425.length} players from 2024-25 season`);
+    }
+
+    if (season202526 && season202526.length > 0) {
+        allPlayers = [...allPlayers, ...season202526];
+        seasonStats['20252026'] = season202526.length;
+        console.log(`Loaded ${season202526.length} players from 2025-26 season`);
+    }
+
+    if (allPlayers.length === 0) {
+        console.error('No player data available for either season');
+        return null;
+    }
+
+    console.log(`Combined player data: ${seasonStats['20242025']} from 2024-25, ${seasonStats['20252026']} from 2025-26`);
+    console.log(`Total players loaded: ${allPlayers.length}`);
+
+    // Show season breakdown for analysis
+    if (seasonStats['20242025'] > 0 && seasonStats['20252026'] > 0) {
+        console.log(`\n📊 Season Data Breakdown:`);
+        console.log(`  2024-25 Season: ${seasonStats['20242025']} players (${((seasonStats['20242025'] / allPlayers.length) * 100).toFixed(1)}%)`);
+        console.log(`  2025-26 Season: ${seasonStats['20252026']} players (${((seasonStats['20252026'] / allPlayers.length) * 100).toFixed(1)}%)`);
+        console.log(`  Combined dataset provides comprehensive player analysis across both seasons`);
+    }
+
+    teams = allPlayers.map(player => player.teamAbbrevs.split(',').pop().trim())
+        .filter((team, index, self) => self.indexOf(team) === index)
+        .sort();
+
+    fs.writeFileSync(todayFile, JSON.stringify(allPlayers, null, 2), 'utf8');
+    return allPlayers;
+}
+
+async function fetchPlayerStatsForSeason(seasonId) {
+    const seasonFile = getSeasonStatsFile(seasonId);
+
+    // Check if we have cached data for this season
+    if (fs.existsSync(seasonFile)) {
+        const isCompletedSeason = COMPLETED_SEASONS.includes(seasonId);
+        const cacheType = isCompletedSeason ? 'permanent cache' : 'cached data';
+        console.log(`Using ${cacheType} for ${seasonId} season...`);
+        try {
+            const cachedData = JSON.parse(fs.readFileSync(seasonFile, 'utf8'));
+            console.log(`Loaded ${cachedData.length} players from ${cacheType} for ${seasonId}`);
+            return cachedData;
+        } catch (error) {
+            console.error(`Error reading cached data for ${seasonId}:`, error);
+            // Continue to fetch fresh data if cache is corrupted
+        }
+    }
+
+    console.log(`Fetching fresh data for ${seasonId} season...`);
     const limit = 100;
     let start = 0;
     let allPlayers = [];
@@ -121,7 +229,7 @@ async function fetchAllPlayerStats() {
             isGame: 'false',
             start: start.toString(),
             limit: limit.toString(),
-            cayenneExp: 'gameTypeId=2 and seasonId<=20242025 and seasonId>=20242025'
+            cayenneExp: `gameTypeId=2 and seasonId<=${seasonId} and seasonId>=${seasonId}`
         });
 
         try {
@@ -131,7 +239,7 @@ async function fetchAllPlayerStats() {
 
             if (players.length > 0) {
                 allPlayers = [...allPlayers, ...players];
-                console.log(`Fetched ${players.length} players (Total: ${allPlayers.length})`);
+                console.log(`Fetched ${players.length} players for ${seasonId} (Total: ${allPlayers.length})`);
                 start += limit;
                 if (players.length < limit) hasMoreData = false;
             } else {
@@ -140,16 +248,21 @@ async function fetchAllPlayerStats() {
 
             await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error) {
-            console.error('Error fetching player stats:', error);
+            console.error(`Error fetching player stats for ${seasonId}:`, error);
             return null;
         }
     }
 
-    teams = allPlayers.map(player => player.teamAbbrevs.split(',').pop().trim())
-        .filter((team, index, self) => self.indexOf(team) === index)
-        .sort();
+    // Cache the data for future use
+    if (allPlayers.length > 0) {
+        try {
+            fs.writeFileSync(seasonFile, JSON.stringify(allPlayers, null, 2), 'utf8');
+            console.log(`Cached ${allPlayers.length} players for ${seasonId} season`);
+        } catch (error) {
+            console.error(`Error caching data for ${seasonId}:`, error);
+        }
+    }
 
-    fs.writeFileSync(todayFile, JSON.stringify(allPlayers, null, 2), 'utf8');
     return allPlayers;
 }
 
@@ -222,6 +335,7 @@ async function scrapePlayerNames(injuredPlayers = [], allPlayerStats) {
     }, [[]]);
 }
 
+// Original weighted sum method
 function calculateScoringProbability(playerStats) {
     const weights = {
         toi: 0.15,           // Time on Ice Weight
@@ -249,6 +363,117 @@ function calculateScoringProbability(playerStats) {
 
     // Normalize to a percentage (0-100 scale)
     return Math.min(Math.max(scoreProbability, 0), 100).toFixed(2);
+}
+
+// Alternative Method 1: Normalized Z-Score Method
+function calculateZScoreMethod(playerStats, allPlayers) {
+    const metrics = ['goals', 'shots', 'shootingPct', 'ppGoals', 'pointsPerGame', 'plusMinus', 'gameWinningGoals', 'timeOnIcePerGame'];
+    const weights = [0.30, 0.25, 0.20, 0.10, 0.10, 0.05, 0.10, 0.15];
+
+    const normalizedScores = metrics.map(metric => {
+        const values = allPlayers.map(p => p[metric]);
+        const mean = values.reduce((a, b) => a + b) / values.length;
+        const stdDev = Math.sqrt(values.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / values.length);
+
+        if (stdDev === 0) return 0; // Handle case where all values are the same
+        return (playerStats[metric] - mean) / stdDev;
+    });
+
+    // Apply weights to normalized scores and convert to 0-100 scale
+    const weightedScore = normalizedScores.reduce((sum, score, i) => sum + (score * weights[i]), 0);
+
+    // Convert z-score to percentage (assuming normal distribution)
+    // Z-score of 0 = 50%, +2 = ~98%, -2 = ~2%
+    const percentage = 50 + (weightedScore * 15); // Scale factor of 15 for reasonable range
+    return Math.min(Math.max(percentage, 0), 100).toFixed(2);
+}
+
+// Alternative Method 2: Percentile-Based Ranking
+function calculatePercentileMethod(playerStats, allPlayers) {
+    const metrics = ['goals', 'shots', 'shootingPct', 'ppGoals', 'pointsPerGame', 'plusMinus', 'gameWinningGoals', 'timeOnIcePerGame'];
+    const weights = [0.30, 0.25, 0.20, 0.10, 0.10, 0.05, 0.10, 0.15];
+
+    const weightedPercentile = metrics.reduce((totalScore, metric, index) => {
+        const sortedValues = allPlayers.map(p => p[metric]).sort((a, b) => b - a);
+        const playerValue = playerStats[metric];
+
+        // Find percentile (higher values = better percentile)
+        const betterCount = sortedValues.filter(val => val > playerValue).length;
+        const percentile = ((allPlayers.length - betterCount) / allPlayers.length) * 100;
+
+        return totalScore + (percentile * weights[index]);
+    }, 0);
+
+    return Math.min(Math.max(weightedPercentile, 0), 100).toFixed(2);
+}
+
+// Alternative Method 3: Expected Goals Based Method
+function calculateExpectedGoalsMethod(playerStats) {
+    // Approximate expected goals based on shot quality and volume
+    const shotQuality = playerStats.shootingPct * 100; // Convert to percentage
+    const shotVolume = playerStats.shots;
+    const expectedGoals = (shotVolume * shotQuality) / 100;
+
+    // Weight by ice time and recent performance
+    const iceTimeFactor = playerStats.timeOnIcePerGame / 60; // Convert to minutes
+    const recentForm = playerStats.pointsPerGame;
+
+    // Normalize to 0-100 scale
+    const score = (expectedGoals * 0.4) + (iceTimeFactor * 0.3) + (recentForm * 0.3);
+    return Math.min(Math.max(score * 2, 0), 100).toFixed(2); // Scale factor of 2 for reasonable range
+}
+
+// Alternative Method 4: Composite Index Method
+function calculateCompositeIndex(playerStats, allPlayers) {
+    // Offensive Index (40% weight)
+    const maxGoals = Math.max(...allPlayers.map(p => p.goals));
+    const maxPoints = Math.max(...allPlayers.map(p => p.points));
+    const maxShootingPct = Math.max(...allPlayers.map(p => p.shootingPct));
+
+    const offensiveIndex = (
+        (playerStats.goals / maxGoals) * 0.4 +
+        (playerStats.points / maxPoints) * 0.3 +
+        (playerStats.shootingPct / maxShootingPct) * 0.3
+    ) * 100;
+
+    // Efficiency Index (30% weight)
+    const maxPointsPerGame = Math.max(...allPlayers.map(p => p.pointsPerGame));
+    const efficiencyIndex = (
+        (playerStats.shootingPct * 100) * 0.5 +
+        (playerStats.pointsPerGame / maxPointsPerGame) * 0.5
+    ) * 100;
+
+    // Usage Index (30% weight)
+    const maxTOI = Math.max(...allPlayers.map(p => p.timeOnIcePerGame));
+    const maxShots = Math.max(...allPlayers.map(p => p.shots));
+    const usageIndex = (
+        (playerStats.timeOnIcePerGame / maxTOI) * 0.7 +
+        (playerStats.shots / maxShots) * 0.3
+    ) * 100;
+
+    const compositeScore = (offensiveIndex * 0.4) + (efficiencyIndex * 0.3) + (usageIndex * 0.3);
+    return Math.min(Math.max(compositeScore, 0), 100).toFixed(2);
+}
+
+// Alternative Method 5: Elo-Style Rating System
+function calculateEloRating(playerStats, allPlayers, baseRating = 1500) {
+    const performanceScore = (
+        playerStats.goals * 10 +
+        (playerStats.points - playerStats.goals) * 7 + // Assists
+        playerStats.points * 5 +
+        playerStats.shootingPct * 100 * 2 +
+        playerStats.plusMinus * 3
+    );
+
+    const maxPossibleScore = Math.max(...allPlayers.map(p =>
+        p.goals * 10 + (p.points - p.goals) * 7 + p.points * 5 + p.shootingPct * 100 * 2 + p.plusMinus * 3
+    ));
+
+    const eloRating = baseRating + ((performanceScore / maxPossibleScore) * 500);
+
+    // Convert Elo rating to percentage (1500 = 50%, 2000 = 100%, 1000 = 0%)
+    const percentage = ((eloRating - 1000) / 1000) * 100;
+    return Math.min(Math.max(percentage, 0), 100).toFixed(2);
 }
 
 // Add this function to calculate team advantage based on standings
@@ -287,9 +512,30 @@ function calculateTeamAdvantage(playerTeam, opposingTeam, standings) {
     return 0;
 }
 
-// Modify the analyzePlayer function to include team advantage
-function analyzePlayer(playerStats, todaysGames, standings) {
-    let prob = calculateScoringProbability(playerStats);
+// Enhanced analyzePlayer function with multiple ranking methods
+function analyzePlayer(playerStats, todaysGames, standings, allPlayers, method = 'original') {
+    let prob;
+
+    // Calculate probability using selected method
+    switch (method) {
+        case 'zscore':
+            prob = calculateZScoreMethod(playerStats, allPlayers);
+            break;
+        case 'percentile':
+            prob = calculatePercentileMethod(playerStats, allPlayers);
+            break;
+        case 'expected':
+            prob = calculateExpectedGoalsMethod(playerStats);
+            break;
+        case 'composite':
+            prob = calculateCompositeIndex(playerStats, allPlayers);
+            break;
+        case 'elo':
+            prob = calculateEloRating(playerStats, allPlayers);
+            break;
+        default:
+            prob = calculateScoringProbability(playerStats);
+    }
 
     // Find if the player's team is playing today
     const playerTeam = playerStats.teamAbbrevs.split(',').pop().trim();
@@ -313,18 +559,20 @@ function analyzePlayer(playerStats, todaysGames, standings) {
         team: playerTeam,
         position: playerStats.positionCode,
         prob,
+        method,
         stats: {
             goals: playerStats.goals,
             plusMinus: playerStats.plusMinus,
             gamesPlayed: playerStats.gamesPlayed,
             points: playerStats.points,
             team: playerStats.teamAbbrevs,
-            toi: playerStats.timeOnIcePerGame
+            toi: playerStats.timeOnIcePerGame,
+            seasonId: playerStats.seasonId
         }
     };
 }
 
-async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
+async function sendEmailReport(rounds, finalChoices, todaysGames, standings, allPlayerStats) {
     // Create a transporter using Gmail
     const transporter = nodemailer.createTransport({
         service: 'gmail',
@@ -385,16 +633,28 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
                 let oppStanding = null;
                 let teamDivision = null;
 
-                for (const [division, teams] of Object.entries(standings)) {
-                    const teamIdx = teams.findIndex(t => t.name === player.team);
-                    const oppIdx = teams.findIndex(t => t.name === opponent);
-                    if (teamIdx !== -1) {
-                        teamStanding = teamIdx + 1;
-                        teamDivision = division;
+                if (standings) {
+                    for (const [division, teams] of Object.entries(standings)) {
+                        const teamIdx = teams.findIndex(t => t.name === player.team);
+                        const oppIdx = teams.findIndex(t => t.name === opponent);
+                        if (teamIdx !== -1) {
+                            teamStanding = teamIdx + 1;
+                            teamDivision = division;
+                        }
+                        if (oppIdx !== -1) {
+                            oppStanding = oppIdx + 1;
+                        }
                     }
-                    if (oppIdx !== -1) {
-                        oppStanding = oppIdx + 1;
+
+                    // Debug: Show team name matching issues
+                    if (!teamStanding || !oppStanding) {
+                        console.log(`Debug - Team name matching for ${player.name}:`);
+                        console.log(`  Player team: "${player.team}"`);
+                        console.log(`  Opponent: "${opponent}"`);
+                        console.log(`  Available team names in standings:`, Object.values(standings).flat().map(t => t.name));
                     }
+                } else {
+                    console.log('Standings data is null - team standings will not be available');
                 }
 
                 reasoning = `
@@ -404,8 +664,8 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
                         <li>Season Performance: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
                         <li>Average ice time per game: ${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</li>
                         <li>Playing ${isHome ? 'home' : 'away'} against ${opponent}</li>
-                        <li>Team standing: ${teamStanding}${getOrdinalSuffix(teamStanding)} in ${teamDivision}</li>
-                        <li>Opponent standing: ${oppStanding}${getOrdinalSuffix(oppStanding)} in their division</li>
+                        <li>Team standing: ${teamStanding ? teamStanding + getOrdinalSuffix(teamStanding) + ' in ' + teamDivision : 'Not available'}</li>
+                        <li>Opponent standing: ${oppStanding ? oppStanding + getOrdinalSuffix(oppStanding) + ' in their division' : 'Not available'}</li>
                         <li>Plus/Minus: ${player.stats.plusMinus > 0 ? '+' : ''}${player.stats.plusMinus}</li>
                     </ul>
                 `;
@@ -428,11 +688,17 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
         // Add the full round table
         emailContent += '<h4>All Players in Round</h4>\n';
         emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
-        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals</th><th>+/-</th><th>Games</th><th>Points</th><th>Avg TOI</th><th>Team</th></tr>\n';
+        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals (24-25)</th><th>Goals (25-26)</th><th>Points (24-25)</th><th>Points (25-26)</th><th>Games (24-25)</th><th>Games (25-26)</th><th>+/- (24-25)</th><th>+/- (25-26)</th><th>Avg TOI (24-25)</th><th>Avg TOI (25-26)</th><th>Team</th></tr>\n';
 
         round.forEach((player, index) => {
-            const avgTOIMinutes = Math.floor(player.stats.toi / 60);
-            const avgTOISeconds = Math.round(player.stats.toi % 60);
+            // Get season-specific stats for this player
+            const seasonStats = getPlayerSeasonStats(player, allPlayerStats);
+
+            // Format TOI for both seasons
+            const toi202425 = seasonStats['20242025'].toi;
+            const toi202526 = seasonStats['20252026'].toi;
+            const toi202425Formatted = toi202425 > 0 ? `${Math.floor(toi202425 / 60)}:${Math.round(toi202425 % 60).toString().padStart(2, '0')}` : '-';
+            const toi202526Formatted = toi202526 > 0 ? `${Math.floor(toi202526 / 60)}:${Math.round(toi202526 % 60).toString().padStart(2, '0')}` : '-';
 
             // Add yellow background for the top pick
             const backgroundColor = index === 0 ? ' style="background-color: #FFEB3B;"' : '';
@@ -442,11 +708,16 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
                 <td>${player.name}</td>
                 <td>${player.position}</td>
                 <td>${player.prob}%</td>
-                <td>${player.stats.goals}</td>
-                <td>${player.stats.plusMinus}</td>
-                <td>${player.stats.gamesPlayed}</td>
-                <td>${player.stats.points}</td>
-                <td>${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</td>
+                <td>${seasonStats['20242025'].goals || '-'}</td>
+                <td>${seasonStats['20252026'].goals || '-'}</td>
+                <td>${seasonStats['20242025'].points || '-'}</td>
+                <td>${seasonStats['20252026'].points || '-'}</td>
+                <td>${seasonStats['20242025'].gamesPlayed || '-'}</td>
+                <td>${seasonStats['20252026'].gamesPlayed || '-'}</td>
+                <td>${seasonStats['20242025'].plusMinus || '-'}</td>
+                <td>${seasonStats['20252026'].plusMinus || '-'}</td>
+                <td>${toi202425Formatted}</td>
+                <td>${toi202526Formatted}</td>
                 <td>${player.team}</td>
             </tr>\n`;
         });
@@ -550,6 +821,40 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings) {
     }
 }
 
+// Helper function to get season-specific stats for a player
+function getPlayerSeasonStats(player, allPlayerStats) {
+    const seasonStats = {
+        '20242025': { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 },
+        '20252026': { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 }
+    };
+
+    // The player object from analysisResults has a different structure
+    // We need to find the original player data by matching name and team
+    const playerName = player.name;
+    const playerTeam = player.team;
+
+    // Find all instances of this player across both seasons by matching name and team
+    const playerInstances = allPlayerStats.filter(p => {
+        const pName = p.skaterFullName;
+        const pTeam = p.teamAbbrevs.split(',').pop().trim();
+        return pName === playerName && pTeam === playerTeam;
+    });
+
+    playerInstances.forEach(instance => {
+        const season = instance.seasonId.toString(); // Convert to string to match object keys
+
+        if (seasonStats[season]) {
+            seasonStats[season].goals = instance.goals || 0;
+            seasonStats[season].points = instance.points || 0;
+            seasonStats[season].gamesPlayed = instance.gamesPlayed || 0;
+            seasonStats[season].plusMinus = instance.plusMinus || 0;
+            seasonStats[season].toi = instance.timeOnIcePerGame || 0;
+        }
+    });
+
+    return seasonStats;
+}
+
 // Helper function for ordinal suffixes
 function getOrdinalSuffix(num) {
     const j = num % 10;
@@ -568,9 +873,17 @@ function getOrdinalSuffix(num) {
 
 async function getTodaysStandings() {
     const today = format(new Date(), 'yyyy-MM-dd');
+    console.log(`Fetching standings for ${today}...`);
 
     try {
-        const response = await fetch(`https://api-web.nhle.com/v1/standings/${today}`);
+        // Try current season standings first, then fallback to previous season
+        let response = await fetch(`https://api-web.nhle.com/v1/standings/${today}`);
+
+        if (!response.ok) {
+            console.log('Current season standings not available, trying previous season...');
+            // Fallback to previous season if current season data isn't available yet
+            response = await fetch(`https://api-web.nhle.com/v1/standings/2024-10-01`);
+        }
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -601,9 +914,14 @@ async function getTodaysStandings() {
             });
         }
 
+        console.log('Standings fetched successfully:');
+        console.log(`- Divisions: ${Object.keys(divisionStandings).join(', ')}`);
+        console.log(`- Total teams: ${data.standings.length}`);
+
         return divisionStandings;
     } catch (error) {
         console.error('Error fetching standings:', error);
+        console.log('Standings will not be available in the report');
         return null;
     }
 }
@@ -612,39 +930,46 @@ function getTodaysGames() {
     console.log('Checking for today\'s games...');
 
     const today = format(new Date(), 'yyyy-MM-dd');
+    console.log(`Looking for games on: ${today}`);
     const games = new Map(); // Using Map to avoid duplicate games
 
     // Read all schedule files from the data directory
     const scheduleFiles = fs.readdirSync(DATA_DIR)
         .filter(file => file.endsWith('-schedule.json'));
 
+    console.log(`Found ${scheduleFiles.length} schedule files to check`);
+
     for (const file of scheduleFiles) {
-        const scheduleData = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8'));
+        try {
+            const scheduleData = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8'));
 
-        // Look through the games array in the schedule
-        for (const game of scheduleData.games) {
-            const gameDate = game.gameDate.split('T')[0]; // Extract just the date part
+            // Look through the games array in the schedule
+            for (const game of scheduleData.games) {
+                const gameDate = game.gameDate.split('T')[0]; // Extract just the date part
 
-            if (gameDate === today) {
-                const gameKey = `${game.homeTeam.abbrev}-${game.awayTeam.abbrev}`;
-                if (!games.has(gameKey)) {
-                    // Convert game time to Eastern Time
-                    const gameDateTime = new Date(game.startTimeUTC);
-                    const easternTime = gameDateTime.toLocaleTimeString('en-US', {
-                        timeZone: 'America/Toronto',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true
-                    });
+                if (gameDate === today) {
+                    const gameKey = `${game.homeTeam.abbrev}-${game.awayTeam.abbrev}`;
+                    if (!games.has(gameKey)) {
+                        // Convert game time to Eastern Time
+                        const gameDateTime = new Date(game.startTimeUTC);
+                        const easternTime = gameDateTime.toLocaleTimeString('en-US', {
+                            timeZone: 'America/Toronto',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true
+                        });
 
-                    games.set(gameKey, {
-                        homeTeam: game.homeTeam.abbrev,
-                        awayTeam: game.awayTeam.abbrev,
-                        startTime: easternTime,
-                        venue: game.venue.default
-                    });
+                        games.set(gameKey, {
+                            homeTeam: game.homeTeam.abbrev,
+                            awayTeam: game.awayTeam.abbrev,
+                            startTime: easternTime,
+                            venue: game.venue.default
+                        });
+                    }
                 }
             }
+        } catch (error) {
+            console.error(`Error reading schedule file ${file}:`, error.message);
         }
     }
 
@@ -659,6 +984,19 @@ function getTodaysGames() {
 
     if (todaysGames.length === 0) {
         console.log('No games scheduled for today.');
+        console.log('Debug info:');
+        console.log(`- Today's date: ${today}`);
+        console.log(`- Schedule files found: ${scheduleFiles.length}`);
+        if (scheduleFiles.length === 0) {
+            console.log('- No schedule files found in data directory');
+            console.log(`- Data directory: ${DATA_DIR}`);
+        } else {
+            console.log('- Schedule files exist but no games found for today');
+            console.log('- This could mean:');
+            console.log('  * No NHL games are scheduled for today');
+            console.log('  * The schedule files are outdated');
+            console.log('  * There\'s an issue with the date format matching');
+        }
     } else {
         console.log(`\nGames scheduled for ${today} (Eastern Time):`);
         console.log('------------------------');
@@ -708,7 +1046,17 @@ function analyzeGoalsAndTOI(allPlayerStats) {
     const correlation = calculateCorrelation(totalTOIs, goals);
 
     console.log('\nStatistical Analysis:');
-    console.log(`Correlation coefficient between Total TOI and Goals: ${correlation.toFixed(3)}`);
+    console.log(`Correlation coefficient between Total TOI and Goals: ${isNaN(correlation) ? 'NaN (check data)' : correlation.toFixed(3)}`);
+
+    // Debug information if correlation is NaN
+    if (isNaN(correlation)) {
+        console.log('Debug info:');
+        console.log(`- Number of players: ${playerStats.length}`);
+        console.log(`- TOI range: ${Math.min(...totalTOIs).toFixed(1)} - ${Math.max(...totalTOIs).toFixed(1)}`);
+        console.log(`- Goals range: ${Math.min(...goals)} - ${Math.max(...goals)}`);
+        console.log(`- TOI variance: ${totalTOIs.every(val => val === totalTOIs[0]) ? 'Zero (all same)' : 'Non-zero'}`);
+        console.log(`- Goals variance: ${goals.every(val => val === goals[0]) ? 'Zero (all same)' : 'Non-zero'}`);
+    }
 
     // Find players with highest goals per hour (minimum 5 games played)
     const efficientScorers = [...playerStats]
@@ -728,13 +1076,42 @@ function analyzeGoalsAndTOI(allPlayerStats) {
     return { playerStats, correlation };
 }
 
-// Helper function to calculate correlation coefficient
+// Helper function to calculate correlation coefficient (Pearson's r)
 function calculateCorrelation(x, y) {
     const n = x.length;
-    const sum1 = x.reduce((a, b) => a + b) * y.reduce((a, b) => a + b);
-    const sum2 = x.reduce((a, b) => a + b * b) * y.reduce((a, b) => a + b * b);
-    const sum3 = x.map((xi, i) => xi * y[i]).reduce((a, b) => a + b);
-    return (n * sum3 - sum1) / Math.sqrt((n * sum2 - sum1 * sum1));
+
+    // Check if arrays have the same length
+    if (n !== y.length || n === 0) {
+        return NaN;
+    }
+
+    // Calculate means
+    const meanX = x.reduce((sum, val) => sum + val, 0) / n;
+    const meanY = y.reduce((sum, val) => sum + val, 0) / n;
+
+    // Calculate numerator: sum of (x - meanX) * (y - meanY)
+    let numerator = 0;
+    for (let i = 0; i < n; i++) {
+        numerator += (x[i] - meanX) * (y[i] - meanY);
+    }
+
+    // Calculate denominators: sum of squared deviations
+    let sumSquaredDevX = 0;
+    let sumSquaredDevY = 0;
+    for (let i = 0; i < n; i++) {
+        sumSquaredDevX += Math.pow(x[i] - meanX, 2);
+        sumSquaredDevY += Math.pow(y[i] - meanY, 2);
+    }
+
+    // Check for zero variance (all values are the same)
+    if (sumSquaredDevX === 0 || sumSquaredDevY === 0) {
+        return NaN; // Cannot calculate correlation when variance is zero
+    }
+
+    // Calculate Pearson correlation coefficient
+    const correlation = numerator / Math.sqrt(sumSquaredDevX * sumSquaredDevY);
+
+    return correlation;
 }
 
 // Helper function to convert position codes to full names
@@ -748,8 +1125,149 @@ function getFullPosition(positionCode) {
     return positions[positionCode] || positionCode;
 }
 
+// Function to get ranking method description
+function getRankingMethodDescription(method) {
+    const descriptions = {
+        'original': 'Original weighted sum method - combines raw stats with fixed weights',
+        'zscore': 'Z-Score normalization - normalizes each metric to standard deviation units',
+        'percentile': 'Percentile-based ranking - ranks players by percentile within each metric',
+        'expected': 'Expected goals method - focuses on shot quality and volume',
+        'composite': 'Composite index - combines offensive, efficiency, and usage indices',
+        'elo': 'Elo-style rating - creates dynamic ratings based on performance scores'
+    };
+    return descriptions[method] || 'Unknown method';
+}
+
+// Function to analyze ranking method differences
+function analyzeRankingDifferences(playerAnalysis, method1, method2) {
+    console.log(`\n=== COMPARING ${method1.toUpperCase()} vs ${method2.toUpperCase()} ===`);
+
+    const method1Results = playerAnalysis.filter(p => p.method === method1).sort((a, b) => b.prob - a.prob);
+    const method2Results = playerAnalysis.filter(p => p.method === method2).sort((a, b) => b.prob - a.prob);
+
+    console.log(`Top 3 differences:`);
+    for (let i = 0; i < Math.min(3, method1Results.length); i++) {
+        const player1 = method1Results[i];
+        const player2 = method2Results[i];
+        const diff = (parseFloat(player1.prob) - parseFloat(player2.prob)).toFixed(2);
+        console.log(`${player1.name}: ${method1}=${player1.prob}%, ${method2}=${player2.prob}% (diff: ${diff}%)`);
+    }
+}
+
+// Function to save picks to file
+async function savePicksToFile(analysisResults, finalChoice, todaysGames, standings) {
+    try {
+        const picksFilename = getNextPicksFilename();
+
+        const picksData = {
+            timestamp: new Date().toISOString(),
+            date: format(new Date(), 'yyyy-MM-dd'),
+            todaysGames: todaysGames,
+            standings: standings,
+            finalChoices: finalChoice,
+            detailedAnalysis: analysisResults.map((round, index) => ({
+                round: index + 1,
+                players: round.map(player => ({
+                    name: player.name,
+                    team: player.team,
+                    position: player.position,
+                    probability: player.prob,
+                    method: player.method,
+                    stats: player.stats
+                }))
+            })),
+            summary: {
+                totalRounds: analysisResults.length,
+                totalPlayersAnalyzed: analysisResults.reduce((sum, round) => sum + round.length, 0),
+                rankingMethod: DEFAULT_RANKING_METHOD,
+                gamesToday: todaysGames.length
+            }
+        };
+
+        fs.writeFileSync(picksFilename, JSON.stringify(picksData, null, 2), 'utf8');
+        console.log(`\nPicks saved to: ${picksFilename}`);
+
+    } catch (error) {
+        console.error('Error saving picks to file:', error);
+    }
+}
+
+// Function to show season cache status
+function showSeasonCacheStatus() {
+    console.log('\n=== SEASON CACHE STATUS ===');
+
+    const seasonsToCheck = ['20242025', '20252026'];
+
+    seasonsToCheck.forEach(seasonId => {
+        const seasonFile = getSeasonStatsFile(seasonId);
+        const isCompleted = COMPLETED_SEASONS.includes(seasonId);
+        const exists = fs.existsSync(seasonFile);
+
+        if (exists) {
+            try {
+                const stats = fs.statSync(seasonFile);
+                const sizeKB = (stats.size / 1024).toFixed(1);
+                const cacheType = isCompleted ? 'permanent' : 'temporary';
+                console.log(`${seasonId}: ✅ Cached (${sizeKB} KB, ${cacheType})`);
+            } catch (error) {
+                console.log(`${seasonId}: ❌ Cache corrupted`);
+            }
+        } else {
+            console.log(`${seasonId}: ⏳ Not cached (will fetch fresh)`);
+        }
+    });
+
+    console.log('===========================\n');
+}
+
+// Function to list existing picks files
+function listExistingPicks() {
+    try {
+        if (!fs.existsSync(PICKS_BASE_DIR)) {
+            console.log('No picks directory found.');
+            return;
+        }
+
+        const dateDirs = fs.readdirSync(PICKS_BASE_DIR, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name)
+            .sort((a, b) => b.localeCompare(a)); // Sort newest first
+
+        if (dateDirs.length === 0) {
+            console.log('No picks files found.');
+            return;
+        }
+
+        console.log('\n=== EXISTING PICKS FILES ===');
+        dateDirs.forEach(dateDir => {
+            const datePath = path.join(PICKS_BASE_DIR, dateDir);
+            const picksFiles = fs.readdirSync(datePath)
+                .filter(file => file.endsWith('.json'))
+                .sort();
+
+            console.log(`\n${dateDir}:`);
+            picksFiles.forEach(file => {
+                const filePath = path.join(datePath, file);
+                const stats = fs.statSync(filePath);
+                console.log(`  ${file} (${stats.size} bytes, ${stats.mtime.toLocaleString()})`);
+            });
+        });
+        console.log('============================\n');
+
+    } catch (error) {
+        console.error('Error listing picks files:', error);
+    }
+}
+
 async function main() {
     console.log('Initializing NHL player stats analyzer...');
+
+    // Show season cache status
+    showSeasonCacheStatus();
+
+    // List existing picks files
+    listExistingPicks();
+
     const allPlayerStats = await fetchAllPlayerStats();
 
     if (!allPlayerStats) {
@@ -774,16 +1292,52 @@ async function main() {
     const finalChoice = [];
     const analysisResults = [];
 
+    // Define available ranking methods
+    const rankingMethods = ['original', 'zscore', 'percentile', 'expected', 'composite', 'elo'];
+
+    // Show method descriptions if enabled
+    if (SHOW_METHOD_DESCRIPTIONS) {
+        console.log('\n=== AVAILABLE RANKING METHODS ===');
+        rankingMethods.forEach(method => {
+            console.log(`${method.toUpperCase()}: ${getRankingMethodDescription(method)}`);
+        });
+        console.log('================================\n');
+    }
+
+    // Compare all methods for the first round (if available)
+    if (SHOW_METHOD_COMPARISON && pickRounds.length > 0 && pickRounds[0].length > 0) {
+        console.log('\n=== RANKING METHOD COMPARISON ===');
+        console.log('Comparing top 5 players using different ranking methods:\n');
+
+        const topPlayers = pickRounds[0].slice(0, 5);
+
+        rankingMethods.forEach(method => {
+            console.log(`\n--- ${method.toUpperCase()} METHOD ---`);
+            const methodAnalysis = topPlayers.map(player =>
+                analyzePlayer(player, todaysGames, standings, allPlayerStats, method)
+            );
+            methodAnalysis.sort((a, b) => b.prob - a.prob);
+
+            methodAnalysis.forEach((player, index) => {
+                console.log(`${index + 1}. ${player.name} (${player.team}) - ${player.prob}%`);
+            });
+        });
+        console.log('\n================================\n');
+    }
+
+    // Use the configured method for final analysis
+    const selectedMethod = DEFAULT_RANKING_METHOD;
+
     pickRounds.forEach((picks, roundIndex) => {
         const playerAnalysis = [];
 
         picks.forEach(player => {
-            playerAnalysis.push(analyzePlayer(player, todaysGames, standings));
+            playerAnalysis.push(analyzePlayer(player, todaysGames, standings, allPlayerStats, selectedMethod));
         });
 
         playerAnalysis.sort((a, b) => b.prob - a.prob);
 
-        console.log(`Round ${roundIndex + 1}:`);
+        console.log(`Round ${roundIndex + 1} (using ${selectedMethod} method):`);
         playerAnalysis.forEach((player, index) => {
             console.log(`${index + 1}. ${player.name} (${player.team}) - ${player.prob}%`);
         });
@@ -800,8 +1354,13 @@ async function main() {
         console.log(`Round ${index + 1}: ${choice}`);
     });
 
+    // Save picks to file (if enabled)
+    if (SAVE_PICKS_TO_FILES) {
+        await savePicksToFile(analysisResults, finalChoice, todaysGames, standings);
+    }
+
     // Send email report with additional data
-    await sendEmailReport(analysisResults, finalChoice, todaysGames, standings);
+    await sendEmailReport(analysisResults, finalChoice, todaysGames, standings, allPlayerStats);
 }
 
 main();
