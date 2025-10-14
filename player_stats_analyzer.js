@@ -23,10 +23,19 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 // NHL Season Configuration
 const CURRENT_SEASON = '20252026'; // Current NHL season (2025-26)
-const COMBINE_SEASONS = true; // Set to true to combine 2024-25 and 2025-26 season data
+const COMBINE_SEASONS = true; // Set to true to combine multiple seasons
+
+// Last 5 seasons to fetch and combine
+const SEASONS_TO_FETCH = [
+    '20252026', // 2025-26 (current)
+    '20242025', // 2024-25
+    '20232024', // 2023-24
+    '20222023', // 2022-23
+    '20212022'  // 2021-22
+];
 
 // Seasons that are completed and should be cached permanently (never change)
-const COMPLETED_SEASONS = ['20242025']; // Add completed seasons here
+const COMPLETED_SEASONS = ['20242025', '20232024', '20222023', '20212022']; // Add completed seasons here
 
 // Available ranking methods:
 // 'original' - Original weighted sum method (default)
@@ -153,43 +162,47 @@ async function fetchAllPlayerStats() {
         return data;
     }
 
-    console.log('Fetching combined player data from 2024-25 and 2025-26 seasons...');
+    console.log(`Fetching combined player data from last ${SEASONS_TO_FETCH.length} seasons...`);
 
-    // Fetch both seasons
-    const season202425 = await fetchPlayerStatsForSeason('20242025');
-    const season202526 = await fetchPlayerStatsForSeason('20252026');
-
-    // Combine the data
+    // Fetch all configured seasons
     let allPlayers = [];
-    let seasonStats = { '20242025': 0, '20252026': 0 };
+    let seasonStats = {};
 
-    if (season202425 && season202425.length > 0) {
-        allPlayers = [...allPlayers, ...season202425];
-        seasonStats['20242025'] = season202425.length;
-        console.log(`Loaded ${season202425.length} players from 2024-25 season`);
-    }
+    for (const seasonId of SEASONS_TO_FETCH) {
+        const seasonData = await fetchPlayerStatsForSeason(seasonId);
 
-    if (season202526 && season202526.length > 0) {
-        allPlayers = [...allPlayers, ...season202526];
-        seasonStats['20252026'] = season202526.length;
-        console.log(`Loaded ${season202526.length} players from 2025-26 season`);
+        if (seasonData && seasonData.length > 0) {
+            allPlayers = [...allPlayers, ...seasonData];
+            seasonStats[seasonId] = seasonData.length;
+
+            // Format season for display
+            const year1 = seasonId.substring(0, 4);
+            const year2 = seasonId.substring(4, 8);
+            console.log(`Loaded ${seasonData.length} players from ${year1}-${year2.substring(2)} season`);
+        } else {
+            console.warn(`No data available for season ${seasonId}`);
+            seasonStats[seasonId] = 0;
+        }
     }
 
     if (allPlayers.length === 0) {
-        console.error('No player data available for either season');
+        console.error('No player data available for any season');
         return null;
     }
 
-    console.log(`Combined player data: ${seasonStats['20242025']} from 2024-25, ${seasonStats['20252026']} from 2025-26`);
-    console.log(`Total players loaded: ${allPlayers.length}`);
+    console.log(`\nTotal players loaded: ${allPlayers.length}`);
 
-    // Show season breakdown for analysis
-    if (seasonStats['20242025'] > 0 && seasonStats['20252026'] > 0) {
-        console.log(`\n📊 Season Data Breakdown:`);
-        console.log(`  2024-25 Season: ${seasonStats['20242025']} players (${((seasonStats['20242025'] / allPlayers.length) * 100).toFixed(1)}%)`);
-        console.log(`  2025-26 Season: ${seasonStats['20252026']} players (${((seasonStats['20252026'] / allPlayers.length) * 100).toFixed(1)}%)`);
-        console.log(`  Combined dataset provides comprehensive player analysis across both seasons`);
-    }
+    // Show detailed season breakdown for analysis
+    console.log(`\n📊 Multi-Season Data Breakdown:`);
+    SEASONS_TO_FETCH.forEach(seasonId => {
+        const year1 = seasonId.substring(0, 4);
+        const year2 = seasonId.substring(4, 8);
+        const count = seasonStats[seasonId] || 0;
+        const percentage = ((count / allPlayers.length) * 100).toFixed(1);
+        const cacheStatus = COMPLETED_SEASONS.includes(seasonId) ? '(permanently cached)' : '(may update)';
+        console.log(`  ${year1}-${year2.substring(2)}: ${count} players (${percentage}%) ${cacheStatus}`);
+    });
+    console.log(`  Combined dataset provides comprehensive ${SEASONS_TO_FETCH.length}-season player analysis`);
 
     teams = allPlayers.map(player => player.teamAbbrevs.split(',').pop().trim())
         .filter((team, index, self) => self.indexOf(team) === index)
@@ -688,17 +701,16 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
         // Add the full round table
         emailContent += '<h4>All Players in Round</h4>\n';
         emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
-        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals (24-25)</th><th>Goals (25-26)</th><th>Points (24-25)</th><th>Points (25-26)</th><th>Games (24-25)</th><th>Games (25-26)</th><th>+/- (24-25)</th><th>+/- (25-26)</th><th>Avg TOI (24-25)</th><th>Avg TOI (25-26)</th><th>Team</th></tr>\n';
+        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals (Current)</th><th>Goals (Last)</th><th>5-Yr Goals</th><th>Points (Current)</th><th>Points (Last)</th><th>5-Yr Points</th><th>5-Yr Games</th><th>+/- (Current)</th><th>Avg TOI (Current)</th><th>Team</th></tr>\n';
 
         round.forEach((player, index) => {
-            // Get season-specific stats for this player
+            // Get season-specific and 5-year totals for this player
             const seasonStats = getPlayerSeasonStats(player, allPlayerStats);
+            const fiveYearStats = getPlayerCareerStats(player, allPlayerStats);
 
-            // Format TOI for both seasons
-            const toi202425 = seasonStats['20242025'].toi;
-            const toi202526 = seasonStats['20252026'].toi;
-            const toi202425Formatted = toi202425 > 0 ? `${Math.floor(toi202425 / 60)}:${Math.round(toi202425 % 60).toString().padStart(2, '0')}` : '-';
-            const toi202526Formatted = toi202526 > 0 ? `${Math.floor(toi202526 / 60)}:${Math.round(toi202526 % 60).toString().padStart(2, '0')}` : '-';
+            // Format TOI for current season
+            const toiCurrent = seasonStats['20252026'].toi;
+            const toiCurrentFormatted = toiCurrent > 0 ? `${Math.floor(toiCurrent / 60)}:${Math.round(toiCurrent % 60).toString().padStart(2, '0')}` : '-';
 
             // Add yellow background for the top pick
             const backgroundColor = index === 0 ? ' style="background-color: #FFEB3B;"' : '';
@@ -708,21 +720,21 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
                 <td>${player.name}</td>
                 <td>${player.position}</td>
                 <td>${player.prob}%</td>
-                <td>${seasonStats['20242025'].goals || '-'}</td>
                 <td>${seasonStats['20252026'].goals || '-'}</td>
-                <td>${seasonStats['20242025'].points || '-'}</td>
+                <td>${seasonStats['20242025'].goals || '-'}</td>
+                <td><strong>${fiveYearStats.totalGoals || '-'}</strong></td>
                 <td>${seasonStats['20252026'].points || '-'}</td>
-                <td>${seasonStats['20242025'].gamesPlayed || '-'}</td>
-                <td>${seasonStats['20252026'].gamesPlayed || '-'}</td>
-                <td>${seasonStats['20242025'].plusMinus || '-'}</td>
+                <td>${seasonStats['20242025'].points || '-'}</td>
+                <td><strong>${fiveYearStats.totalPoints || '-'}</strong></td>
+                <td>${fiveYearStats.totalGames || '-'}</td>
                 <td>${seasonStats['20252026'].plusMinus || '-'}</td>
-                <td>${toi202425Formatted}</td>
-                <td>${toi202526Formatted}</td>
+                <td>${toiCurrentFormatted}</td>
                 <td>${player.team}</td>
             </tr>\n`;
         });
 
         emailContent += '</table>\n\n';
+        emailContent += '<p style="font-size: 0.9em; color: #666; margin-top: 10px;"><em>Note: "5-Yr" stats are totals from the last 5 seasons (2021-22 through 2025-26), not entire career</em></p>\n';
     });
 
     emailContent += '<h3>Final Choices</h3>\n';
@@ -823,17 +835,19 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
 
 // Helper function to get season-specific stats for a player
 function getPlayerSeasonStats(player, allPlayerStats) {
-    const seasonStats = {
-        '20242025': { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 },
-        '20252026': { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 }
-    };
+    const seasonStats = {};
+
+    // Initialize stats for all seasons we're tracking
+    SEASONS_TO_FETCH.forEach(seasonId => {
+        seasonStats[seasonId] = { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 };
+    });
 
     // The player object from analysisResults has a different structure
     // We need to find the original player data by matching name and team
     const playerName = player.name;
     const playerTeam = player.team;
 
-    // Find all instances of this player across both seasons by matching name and team
+    // Find all instances of this player across all seasons by matching name and team
     const playerInstances = allPlayerStats.filter(p => {
         const pName = p.skaterFullName;
         const pTeam = p.teamAbbrevs.split(',').pop().trim();
@@ -853,6 +867,51 @@ function getPlayerSeasonStats(player, allPlayerStats) {
     });
 
     return seasonStats;
+}
+
+// Helper function to get 5-year totals (aggregated across all fetched seasons)
+// Note: This is NOT true career stats, only the seasons in SEASONS_TO_FETCH
+function getPlayerCareerStats(player, allPlayerStats) {
+    const playerName = player.name;
+    const playerTeam = player.team;
+
+    // Find all instances of this player across all fetched seasons
+    const playerInstances = allPlayerStats.filter(p => {
+        const pName = p.skaterFullName;
+        const pTeam = p.teamAbbrevs.split(',').pop().trim();
+        return pName === playerName && pTeam === playerTeam;
+    });
+
+    // Aggregate totals across fetched seasons (5-year totals)
+    const fiveYearStats = {
+        totalGoals: 0,
+        totalPoints: 0,
+        totalGames: 0,
+        totalPlusMinus: 0,
+        avgTOI: 0
+    };
+
+    let toiSum = 0;
+    let toiCount = 0;
+
+    playerInstances.forEach(instance => {
+        fiveYearStats.totalGoals += instance.goals || 0;
+        fiveYearStats.totalPoints += instance.points || 0;
+        fiveYearStats.totalGames += instance.gamesPlayed || 0;
+        fiveYearStats.totalPlusMinus += instance.plusMinus || 0;
+
+        if (instance.timeOnIcePerGame > 0) {
+            toiSum += instance.timeOnIcePerGame;
+            toiCount++;
+        }
+    });
+
+    // Calculate average TOI across seasons
+    if (toiCount > 0) {
+        fiveYearStats.avgTOI = toiSum / toiCount;
+    }
+
+    return fiveYearStats;
 }
 
 // Helper function for ordinal suffixes
@@ -1196,24 +1255,27 @@ async function savePicksToFile(analysisResults, finalChoice, todaysGames, standi
 function showSeasonCacheStatus() {
     console.log('\n=== SEASON CACHE STATUS ===');
 
-    const seasonsToCheck = ['20242025', '20252026'];
-
-    seasonsToCheck.forEach(seasonId => {
+    SEASONS_TO_FETCH.forEach(seasonId => {
         const seasonFile = getSeasonStatsFile(seasonId);
         const isCompleted = COMPLETED_SEASONS.includes(seasonId);
         const exists = fs.existsSync(seasonFile);
+
+        // Format season for display
+        const year1 = seasonId.substring(0, 4);
+        const year2 = seasonId.substring(4, 8);
+        const seasonLabel = `${year1}-${year2.substring(2)}`;
 
         if (exists) {
             try {
                 const stats = fs.statSync(seasonFile);
                 const sizeKB = (stats.size / 1024).toFixed(1);
                 const cacheType = isCompleted ? 'permanent' : 'temporary';
-                console.log(`${seasonId}: ✅ Cached (${sizeKB} KB, ${cacheType})`);
+                console.log(`${seasonLabel} (${seasonId}): ✅ Cached (${sizeKB} KB, ${cacheType})`);
             } catch (error) {
-                console.log(`${seasonId}: ❌ Cache corrupted`);
+                console.log(`${seasonLabel} (${seasonId}): ❌ Cache corrupted`);
             }
         } else {
-            console.log(`${seasonId}: ⏳ Not cached (will fetch fresh)`);
+            console.log(`${seasonLabel} (${seasonId}): ⏳ Not cached (will fetch fresh)`);
         }
     });
 
