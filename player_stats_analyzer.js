@@ -23,19 +23,13 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 // NHL Season Configuration
 const CURRENT_SEASON = '20252026'; // Current NHL season (2025-26)
-const COMBINE_SEASONS = true; // Set to true to combine multiple seasons
+const COMBINE_SEASONS = true; // Set to true to combine last 5 years of season data
 
-// Last 5 seasons to fetch and combine
-const SEASONS_TO_FETCH = [
-    '20252026', // 2025-26 (current)
-    '20242025', // 2024-25
-    '20232024', // 2023-24
-    '20222023', // 2022-23
-    '20212022'  // 2021-22
-];
+// Seasons to analyze (last 5 years)
+const SEASONS_TO_ANALYZE = ['20212022', '20222023', '20232024', '20242025', '20252026'];
 
 // Seasons that are completed and should be cached permanently (never change)
-const COMPLETED_SEASONS = ['20242025', '20232024', '20222023', '20212022']; // Add completed seasons here
+const COMPLETED_SEASONS = ['20212022', '20222023', '20232024', '20242025']; // Add completed seasons here
 
 // Available ranking methods:
 // 'original' - Original weighted sum method (default)
@@ -86,6 +80,13 @@ function getLatestPlayerDailyStats() {
     if (files.length === 0) return null;
     files.sort((a, b) => b.localeCompare(a));
     return path.join(DATA_DIR, files[0]);
+}
+
+function formatSeasonDisplay(seasonId) {
+    // Convert '20212022' to '2021-22'
+    const year1 = seasonId.substring(0, 4);
+    const year2 = seasonId.substring(6, 8);
+    return `${year1}-${year2}`;
 }
 
 function getPicksDirectory() {
@@ -162,26 +163,22 @@ async function fetchAllPlayerStats() {
         return data;
     }
 
-    console.log(`Fetching combined player data from last ${SEASONS_TO_FETCH.length} seasons...`);
+    console.log('Fetching combined player data from last 5 years (2021-22 through 2025-26)...');
 
-    // Fetch all configured seasons
+    // Fetch all seasons
     let allPlayers = [];
     let seasonStats = {};
 
-    for (const seasonId of SEASONS_TO_FETCH) {
+    for (const seasonId of SEASONS_TO_ANALYZE) {
         const seasonData = await fetchPlayerStatsForSeason(seasonId);
 
         if (seasonData && seasonData.length > 0) {
             allPlayers = [...allPlayers, ...seasonData];
             seasonStats[seasonId] = seasonData.length;
-
-            // Format season for display
-            const year1 = seasonId.substring(0, 4);
-            const year2 = seasonId.substring(4, 8);
-            console.log(`Loaded ${seasonData.length} players from ${year1}-${year2.substring(2)} season`);
+            console.log(`Loaded ${seasonData.length} players from ${formatSeasonDisplay(seasonId)} season`);
         } else {
-            console.warn(`No data available for season ${seasonId}`);
             seasonStats[seasonId] = 0;
+            console.log(`No data available for ${formatSeasonDisplay(seasonId)} season`);
         }
     }
 
@@ -190,19 +187,16 @@ async function fetchAllPlayerStats() {
         return null;
     }
 
-    console.log(`\nTotal players loaded: ${allPlayers.length}`);
+    console.log(`\nTotal players loaded across all seasons: ${allPlayers.length}`);
 
-    // Show detailed season breakdown for analysis
-    console.log(`\n📊 Multi-Season Data Breakdown:`);
-    SEASONS_TO_FETCH.forEach(seasonId => {
-        const year1 = seasonId.substring(0, 4);
-        const year2 = seasonId.substring(4, 8);
-        const count = seasonStats[seasonId] || 0;
-        const percentage = ((count / allPlayers.length) * 100).toFixed(1);
-        const cacheStatus = COMPLETED_SEASONS.includes(seasonId) ? '(permanently cached)' : '(may update)';
-        console.log(`  ${year1}-${year2.substring(2)}: ${count} players (${percentage}%) ${cacheStatus}`);
+    // Show season breakdown for analysis
+    console.log(`\n📊 Season Data Breakdown:`);
+    SEASONS_TO_ANALYZE.forEach(seasonId => {
+        if (seasonStats[seasonId] > 0) {
+            console.log(`  ${formatSeasonDisplay(seasonId)} Season: ${seasonStats[seasonId]} players (${((seasonStats[seasonId] / allPlayers.length) * 100).toFixed(1)}%)`);
+        }
     });
-    console.log(`  Combined dataset provides comprehensive ${SEASONS_TO_FETCH.length}-season player analysis`);
+    console.log(`  Combined dataset provides comprehensive player analysis across 5 years of data`);
 
     teams = allPlayers.map(player => player.teamAbbrevs.split(',').pop().trim())
         .filter((team, index, self) => self.indexOf(team) === index)
@@ -525,6 +519,26 @@ function calculateTeamAdvantage(playerTeam, opposingTeam, standings) {
     return 0;
 }
 
+// Helper function to get player's most recent team and position
+function getPlayerCurrentInfo(playerId, allPlayers) {
+    // Find all instances of this player across all seasons
+    const playerInstances = allPlayers.filter(p => p.playerId === playerId);
+
+    if (playerInstances.length === 0) {
+        return { team: null, position: null };
+    }
+
+    // Sort by season ID descending to get most recent first
+    playerInstances.sort((a, b) => b.seasonId - a.seasonId);
+
+    // Return the team and position from the most recent season
+    const mostRecent = playerInstances[0];
+    return {
+        team: mostRecent.teamAbbrevs.split(',').pop().trim(),
+        position: mostRecent.positionCode
+    };
+}
+
 // Enhanced analyzePlayer function with multiple ranking methods
 function analyzePlayer(playerStats, todaysGames, standings, allPlayers, method = 'original') {
     let prob;
@@ -550,8 +564,11 @@ function analyzePlayer(playerStats, todaysGames, standings, allPlayers, method =
             prob = calculateScoringProbability(playerStats);
     }
 
-    // Find if the player's team is playing today
-    const playerTeam = playerStats.teamAbbrevs.split(',').pop().trim();
+    // Get the player's most recent team and position (from latest season)
+    const currentInfo = getPlayerCurrentInfo(playerStats.playerId, allPlayers);
+    const playerTeam = currentInfo.team;
+    const playerPosition = currentInfo.position;
+
     const game = todaysGames.find(g =>
         g.homeTeam === playerTeam || g.awayTeam === playerTeam
     );
@@ -569,8 +586,9 @@ function analyzePlayer(playerStats, todaysGames, standings, allPlayers, method =
 
     return {
         name: playerStats.skaterFullName,
+        playerId: playerStats.playerId,
         team: playerTeam,
-        position: playerStats.positionCode,
+        position: playerPosition,
         prob,
         method,
         stats: {
@@ -620,97 +638,38 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
 
     rounds.forEach((round, roundIndex) => {
         emailContent += `<h3>Round ${roundIndex + 1}</h3>\n`;
-
-        // Add detailed analysis for top 3 players
-        emailContent += '<h4>Top Picks Analysis</h4>\n';
-        emailContent += '<div style="margin-bottom: 20px;">\n';
-
-        // Get top 3 players
-        const top3 = round.slice(0, 3);
-        top3.forEach((player, index) => {
-            const game = todaysGames.find(g =>
-                g.homeTeam === player.team || g.awayTeam === player.team
-            );
-
-            // Calculate TOI
-            const avgTOIMinutes = Math.floor(player.stats.toi / 60);
-            const avgTOISeconds = Math.round(player.stats.toi % 60);
-
-            let reasoning = '';
-            if (game) {
-                const isHome = game.homeTeam === player.team;
-                const opponent = isHome ? game.awayTeam : game.homeTeam;
-
-                // Get team standings info
-                let teamStanding = null;
-                let oppStanding = null;
-                let teamDivision = null;
-
-                if (standings) {
-                    for (const [division, teams] of Object.entries(standings)) {
-                        const teamIdx = teams.findIndex(t => t.name === player.team);
-                        const oppIdx = teams.findIndex(t => t.name === opponent);
-                        if (teamIdx !== -1) {
-                            teamStanding = teamIdx + 1;
-                            teamDivision = division;
-                        }
-                        if (oppIdx !== -1) {
-                            oppStanding = oppIdx + 1;
-                        }
-                    }
-
-                    // Debug: Show team name matching issues
-                    if (!teamStanding || !oppStanding) {
-                        console.log(`Debug - Team name matching for ${player.name}:`);
-                        console.log(`  Player team: "${player.team}"`);
-                        console.log(`  Opponent: "${opponent}"`);
-                        console.log(`  Available team names in standings:`, Object.values(standings).flat().map(t => t.name));
-                    }
-                } else {
-                    console.log('Standings data is null - team standings will not be available');
-                }
-
-                reasoning = `
-                    <strong>${index + 1}. ${player.name} (${player.position} - ${player.team}) - ${player.prob}%</strong><br>
-                    <ul>
-                        <li>Position: ${getFullPosition(player.position)}</li>
-                        <li>Season Performance: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
-                        <li>Average ice time per game: ${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</li>
-                        <li>Playing ${isHome ? 'home' : 'away'} against ${opponent}</li>
-                        <li>Team standing: ${teamStanding ? teamStanding + getOrdinalSuffix(teamStanding) + ' in ' + teamDivision : 'Not available'}</li>
-                        <li>Opponent standing: ${oppStanding ? oppStanding + getOrdinalSuffix(oppStanding) + ' in their division' : 'Not available'}</li>
-                        <li>Plus/Minus: ${player.stats.plusMinus > 0 ? '+' : ''}${player.stats.plusMinus}</li>
-                    </ul>
-                `;
-            } else {
-                reasoning = `
-                    <strong>${index + 1}. ${player.name} (${player.position} - ${player.team}) - ${player.prob}%</strong><br>
-                    <ul>
-                        <li>Position: ${getFullPosition(player.position)}</li>
-                        <li>No game scheduled for today</li>
-                        <li>Season stats: ${player.stats.goals} goals, ${player.stats.points} points in ${player.stats.gamesPlayed} games</li>
-                        <li>Average ice time per game: ${avgTOIMinutes}:${avgTOISeconds.toString().padStart(2, '0')}</li>
-                    </ul>
-                `;
-            }
-            emailContent += reasoning;
-        });
-
-        emailContent += '</div>\n';
-
-        // Add the full round table
-        emailContent += '<h4>All Players in Round</h4>\n';
+        emailContent += '<p style="font-size: 0.9em; color: #666; margin-bottom: 10px;">Note: Analysis based on 5 years of data (2021-22 through 2025-26). Current year shows 2025-26 stats, Total shows sum across all 5 years.</p>\n';
         emailContent += '<table border="1" style="border-collapse: collapse; width: 100%;">\n';
-        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals (Current)</th><th>Goals (Last)</th><th>5-Yr Goals</th><th>Points (Current)</th><th>Points (Last)</th><th>5-Yr Points</th><th>5-Yr Games</th><th>+/- (Current)</th><th>Avg TOI (Current)</th><th>Team</th></tr>\n';
+        emailContent += '<tr><th>Rank</th><th>Player</th><th>Pos</th><th>Probability</th><th>Goals (Current)</th><th>Points (Current)</th><th>Games (Current)</th><th>Total Goals (5yr)</th><th>Total Points (5yr)</th><th>+/- (Current)</th><th>Avg TOI (Current)</th><th>Team</th></tr>\n';
 
         round.forEach((player, index) => {
             // Get season-specific and 5-year totals for this player
             const seasonStats = getPlayerSeasonStats(player, allPlayerStats);
             const fiveYearStats = getPlayerCareerStats(player, allPlayerStats);
 
-            // Format TOI for current season
-            const toiCurrent = seasonStats['20252026'].toi;
-            const toiCurrentFormatted = toiCurrent > 0 ? `${Math.floor(toiCurrent / 60)}:${Math.round(toiCurrent % 60).toString().padStart(2, '0')}` : '-';
+            // Get current season stats (2025-26)
+            const currentSeasonStats = seasonStats['20252026'] || { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 };
+
+            // Calculate totals across all 5 years
+            let totalGoals = 0;
+            let totalPoints = 0;
+            SEASONS_TO_ANALYZE.forEach(seasonId => {
+                if (seasonStats[seasonId]) {
+                    totalGoals += seasonStats[seasonId].goals || 0;
+                    totalPoints += seasonStats[seasonId].points || 0;
+                }
+            });
+
+            // Format display values - show '-' if player hasn't played this season
+            const currentGoals = currentSeasonStats.gamesPlayed > 0 ? currentSeasonStats.goals : '-';
+            const currentPoints = currentSeasonStats.gamesPlayed > 0 ? currentSeasonStats.points : '-';
+            const currentGames = currentSeasonStats.gamesPlayed > 0 ? currentSeasonStats.gamesPlayed : '-';
+            const currentPlusMinus = currentSeasonStats.gamesPlayed > 0 ? currentSeasonStats.plusMinus : '-';
+
+            // Format TOI
+            const currentToiFormatted = currentSeasonStats.toi > 0 ?
+                `${Math.floor(currentSeasonStats.toi / 60)}:${Math.round(currentSeasonStats.toi % 60).toString().padStart(2, '0')}` :
+                '-';
 
             // Add yellow background for the top pick
             const backgroundColor = index === 0 ? ' style="background-color: #FFEB3B;"' : '';
@@ -720,15 +679,13 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
                 <td>${player.name}</td>
                 <td>${player.position}</td>
                 <td>${player.prob}%</td>
-                <td>${seasonStats['20252026'].goals || '-'}</td>
-                <td>${seasonStats['20242025'].goals || '-'}</td>
-                <td><strong>${fiveYearStats.totalGoals || '-'}</strong></td>
-                <td>${seasonStats['20252026'].points || '-'}</td>
-                <td>${seasonStats['20242025'].points || '-'}</td>
-                <td><strong>${fiveYearStats.totalPoints || '-'}</strong></td>
-                <td>${fiveYearStats.totalGames || '-'}</td>
-                <td>${seasonStats['20252026'].plusMinus || '-'}</td>
-                <td>${toiCurrentFormatted}</td>
+                <td>${currentGoals}</td>
+                <td>${currentPoints}</td>
+                <td>${currentGames}</td>
+                <td>${totalGoals}</td>
+                <td>${totalPoints}</td>
+                <td>${currentPlusMinus}</td>
+                <td>${currentToiFormatted}</td>
                 <td>${player.team}</td>
             </tr>\n`;
         });
@@ -811,7 +768,8 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
 
             <p style="font-style: italic; margin-top: 15px;">
                 Note: These weights and adjustments are used to calculate the final probability score for each player. 
-                The actual likelihood of scoring may vary based on additional factors not captured in this model.
+                The analysis incorporates data from the last 5 NHL seasons (2021-22 through 2025-26) to provide comprehensive 
+                player performance insights. The actual likelihood of scoring may vary based on additional factors not captured in this model.
             </p>
         </div>
     `;
@@ -837,22 +795,16 @@ async function sendEmailReport(rounds, finalChoices, todaysGames, standings, all
 function getPlayerSeasonStats(player, allPlayerStats) {
     const seasonStats = {};
 
-    // Initialize stats for all seasons we're tracking
-    SEASONS_TO_FETCH.forEach(seasonId => {
+    // Initialize all seasons
+    SEASONS_TO_ANALYZE.forEach(seasonId => {
         seasonStats[seasonId] = { goals: 0, points: 0, gamesPlayed: 0, plusMinus: 0, toi: 0 };
     });
 
-    // The player object from analysisResults has a different structure
-    // We need to find the original player data by matching name and team
-    const playerName = player.name;
-    const playerTeam = player.team;
+    // Match by player ID to handle team changes correctly
+    const playerId = player.playerId;
 
-    // Find all instances of this player across all seasons by matching name and team
-    const playerInstances = allPlayerStats.filter(p => {
-        const pName = p.skaterFullName;
-        const pTeam = p.teamAbbrevs.split(',').pop().trim();
-        return pName === playerName && pTeam === playerTeam;
-    });
+    // Find all instances of this player across all seasons by matching player ID
+    const playerInstances = allPlayerStats.filter(p => p.playerId === playerId);
 
     playerInstances.forEach(instance => {
         const season = instance.seasonId.toString(); // Convert to string to match object keys
@@ -1255,7 +1207,7 @@ async function savePicksToFile(analysisResults, finalChoice, todaysGames, standi
 function showSeasonCacheStatus() {
     console.log('\n=== SEASON CACHE STATUS ===');
 
-    SEASONS_TO_FETCH.forEach(seasonId => {
+    SEASONS_TO_ANALYZE.forEach(seasonId => {
         const seasonFile = getSeasonStatsFile(seasonId);
         const isCompleted = COMPLETED_SEASONS.includes(seasonId);
         const exists = fs.existsSync(seasonFile);
@@ -1270,12 +1222,12 @@ function showSeasonCacheStatus() {
                 const stats = fs.statSync(seasonFile);
                 const sizeKB = (stats.size / 1024).toFixed(1);
                 const cacheType = isCompleted ? 'permanent' : 'temporary';
-                console.log(`${seasonLabel} (${seasonId}): ✅ Cached (${sizeKB} KB, ${cacheType})`);
+                console.log(`${formatSeasonDisplay(seasonId)}: ✅ Cached (${sizeKB} KB, ${cacheType})`);
             } catch (error) {
-                console.log(`${seasonLabel} (${seasonId}): ❌ Cache corrupted`);
+                console.log(`${formatSeasonDisplay(seasonId)}: ❌ Cache corrupted`);
             }
         } else {
-            console.log(`${seasonLabel} (${seasonId}): ⏳ Not cached (will fetch fresh)`);
+            console.log(`${formatSeasonDisplay(seasonId)}: ⏳ Not cached (will fetch fresh)`);
         }
     });
 
